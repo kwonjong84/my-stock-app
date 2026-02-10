@@ -103,7 +103,7 @@ if st.button("🔄 리포트 갱신 (실시간 고점 반영)"):
 
         # 깔끔한 표 렌더링
         st.dataframe(
-            final_df.style.applymap(highlight_status, subset=['상태'])
+            final_df.style.map(highlight_status, subset=['상태'])
             .format({'현재가': '{:,}원', '기준고점': '{:,}원', '손절(-10%)': '{:,}원', '손절(-15%)': '{:,}원'}),
             use_container_width=True
         )
