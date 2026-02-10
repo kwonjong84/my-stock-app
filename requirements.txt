@@ -1,4 +1,1 @@
-pandas
-pykrx
-pytz
 setuptools
