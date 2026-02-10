@@ -2,7 +2,7 @@ import streamlit as st
 import sys
 import types
 
-# 에러 방지를 위한 가짜 모듈 생성 (pkg_resources 이슈 해결)
+# 1. 최신 파이썬 버전에서의 라이브러리 충돌 방지 (가장 중요)
 if 'pkg_resources' not in sys.modules:
     sys.modules['pkg_resources'] = types.ModuleType('pkg_resources')
 
@@ -13,25 +13,19 @@ import pytz
 
 # 페이지 설정
 st.set_page_config(page_title="주식 손절선 관리", layout="wide")
-
 st.title("📊 실시간 손절선 관리 앱")
 
-# [핵심] 사용자님의 종목 리스트를 여기에 고정합니다. (동기화 해결)
+# 2. 종목 리스트 고정 (앞에 '0'이 안 빠지게 문자열로 관리)
 if 'tickers' not in st.session_state:
     st.session_state.tickers = [
-        ('102110', 'Tiger 200'), 
-        ('069500', 'KODEX 200'),
-        ('000100', '유한양행'), 
-        ('005935', '삼성전자우'), 
-        ('086790', 'KB금융'), 
-        ('229200', 'KODEX 코스닥150'), 
-        ('437730', '삼현'), 
-        ('005385', '현대차우'), 
-        ('103590', '일진전기'),
-        ('037620', '미래에셋증권')  # 미래에셋증권 추가 완료!
+        ('102110', 'Tiger 200'), ('069500', 'KODEX 200'),
+        ('000100', '유한양행'), ('005935', '삼성전자우'), 
+        ('086790', 'KB금융'), ('229200', 'KODEX 코스닥150'), 
+        ('437730', '삼현'), ('005385', '현대차우'), 
+        ('103590', '일진전기'), ('037620', '미래에셋증권')
     ]
 
-# 사이드바: 종목 추가/삭제 (추가로 관리하고 싶을 때 사용)
+# 사이드바 관리창
 with st.sidebar:
     st.header("📍 종목 관리")
     new_ticker = st.text_input("종목코드 (6자리)", placeholder="예: 005930")
@@ -51,18 +45,20 @@ with st.sidebar:
             st.session_state.tickers.pop(i)
             st.rerun()
 
-# 리포트 생성 함수
+# 3. 리포트 생성 함수 (데이터 누락 방지 로직 추가)
 def get_report():
     seoul_tz = pytz.timezone('Asia/Seoul')
     now_k = datetime.now(seoul_tz)
     today = now_k.strftime("%Y%m%d")
-    start_date = (now_k - timedelta(days=120)).strftime("%Y%m%d")
+    # 기준 고점을 찾기 위해 기간을 150일로 늘렸습니다.
+    start_date = (now_k - timedelta(days=150)).strftime("%Y%m%d")
 
     results = []
     for ticker, name in st.session_state.tickers:
-        ticker = ticker.zfill(6) # 종목코드 6자리 유지
+        # 종목코드 앞의 0을 보존하는 핵심 코드
+        t_code = str(ticker).zfill(6)
         try:
-            df = stock.get_market_ohlcv(start_date, today, ticker)
+            df = stock.get_market_ohlcv(start_date, today, t_code)
             if not df.empty:
                 curr = int(df['종가'].iloc[-1])
                 high = int(df['고가'].max())
@@ -77,11 +73,17 @@ def get_report():
                     '종목명': name, '현재가': curr, '기준고점': high,
                     '손절(-10%)': s10, '손절(-15%)': s15, '상태': status
                 })
+            else:
+                # 데이터가 안 불러와져도 표에 '데이터 없음'으로 표시
+                results.append({
+                    '종목명': name, '현재가': "불러오기 실패", '기준고점': "-",
+                    '손절(-10%)': "-", '손절(-15%)': "-", '상태': "확인불가"
+                })
         except:
             continue
     return pd.DataFrame(results)
 
-# 상태별 색상 지정 함수
+# 상태별 색상
 def highlight_status(val):
     if val == "🚨위험": return 'background-color: #ffcccc'
     if val == "⚠️주의": return 'background-color: #fff3cd'
@@ -93,8 +95,6 @@ if st.button("🔄 리포트 갱신"):
     with st.spinner('데이터를 불러오는 중...'):
         df_result = get_report()
         if not df_result.empty:
-            # 최신 Pandas 방식인 .map() 사용
+            # .style.map으로 색상 적용
             st.dataframe(df_result.style.map(highlight_status, subset=['상태']), use_container_width=True)
             st.success(f"업데이트 완료: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            st.warning("데이터를 불러올 수 없습니다. 종목 코드를 확인해 주세요.")
