@@ -1,1 +1,4 @@
-setuptools
+pandas==2.1.4
+pykrx
+pytz
+setuptools==69.0.2
