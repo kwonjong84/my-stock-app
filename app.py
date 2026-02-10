@@ -11,10 +11,14 @@ from pykrx import stock
 from datetime import datetime, timedelta
 import pytz
 
+# 페이지 설정
 st.set_page_config(page_title="주식 손절선 관리", layout="wide")
 st.title("📊 실시간 손절선 관리 앱")
 
-# 2. 미래에셋증권 코드를 '037620' 문자열로 정확히 박았습니다.
+# 2. 한국 시간 설정
+KST = pytz.timezone('Asia/Seoul')
+
+# 종목 리스트 초기화 (문자열로 정확히 저장)
 if 'tickers' not in st.session_state:
     st.session_state.tickers = [
         ('102110', 'Tiger 200'), ('069500', 'KODEX 200'),
@@ -32,7 +36,7 @@ with st.sidebar:
     
     if st.button("➕ 종목 추가"):
         if new_ticker and new_name:
-            st.session_state.tickers.append((new_ticker, new_name))
+            st.session_state.tickers.append((new_ticker.strip(), new_name.strip()))
             st.rerun()
 
     st.write("---")
@@ -44,17 +48,16 @@ with st.sidebar:
             st.session_state.tickers.pop(i)
             st.rerun()
 
-# 3. 데이터 로드 로직 (강력 보강)
+# 3. 리포트 생성 함수 (강력 보강)
 def get_report():
-    seoul_tz = pytz.timezone('Asia/Seoul')
-    now_k = datetime.now(seoul_tz)
+    now_k = datetime.now(KST)
     today = now_k.strftime("%Y%m%d")
-    # 고점 탐색 기간을 180일로 더 늘려 안전하게 데이터를 가져옵니다.
-    start_date = (now_k - timedelta(days=180)).strftime("%Y%m%d")
+    # 고점 탐색 기간을 넉넉히 200일로 설정
+    start_date = (now_k - timedelta(days=200)).strftime("%Y%m%d")
 
     results = []
     for ticker, name in st.session_state.tickers:
-        # 핵심: 무조건 6자리 문자열로 만들고 앞에 0을 채웁니다.
+        # 핵심: 입력된 코드가 무엇이든 강제로 '0'을 채운 6자리 문자열로 변환
         clean_ticker = str(ticker).strip().zfill(6)
         try:
             df = stock.get_market_ohlcv(start_date, today, clean_ticker)
@@ -66,9 +69,9 @@ def get_report():
                 status = "🚨위험" if curr <= s15 else "⚠️주의" if curr <= s10 else "✅안정"
                 results.append({'종목명': name, '현재가': curr, '기준고점': high, '손절(-10%)': s10, '손절(-15%)': s15, '상태': status})
             else:
-                results.append({'종목명': name, '현재가': "불러오기 실패", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "확인불가"})
+                results.append({'종목명': name, '현재가': "조회 실패", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "코드확인요망"})
         except:
-            continue
+            results.append({'종목명': name, '현재가': "에러", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "에러"})
     return pd.DataFrame(results)
 
 # 색상 지정
@@ -80,8 +83,10 @@ def highlight_status(val):
 
 # 메인 버튼
 if st.button("🔄 리포트 갱신"):
-    with st.spinner('데이터 분석 중...'):
+    with st.spinner('데이터를 분석 중입니다...'):
         df_result = get_report()
         if not df_result.empty:
             st.dataframe(df_result.style.map(highlight_status, subset=['상태']), use_container_width=True)
-            st.success(f"업데이트 완료: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            # 하단 시간 표시를 한국 시간으로 강제 적용
+            now_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+            st.success(f"업데이트 완료 (한국시간): {now_str}")
