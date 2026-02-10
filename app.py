@@ -1,90 +1,54 @@
 import streamlit as st
 import sys
 import types
-import time
-
-# 1. 라이브러리 충돌 방지 (유지)
-if 'pkg_resources' not in sys.modules:
-    sys.modules['pkg_resources'] = types.ModuleType('pkg_resources')
-
 import pandas as pd
-from pykrx import stock
 from datetime import datetime, timedelta
 import pytz
+
+# 1. 라이브러리 충돌 방지
+if 'pkg_resources' not in sys.modules:
+    sys.modules['pkg_resources'] = types.ModuleType('pkg_resources')
+from pykrx import stock
+
+# [아이디 적용 완료] 사용자님의 구글 시트 ID입니다.
+SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
 st.set_page_config(page_title="주식 손절선 관리", layout="wide")
 st.title("📊 실시간 손절선 관리 앱")
 
 KST = pytz.timezone('Asia/Seoul')
 
-# 종목 리스트 (미래에셋증권 포함)
-if 'tickers' not in st.session_state:
-    st.session_state.tickers = [
-        ('102110', 'Tiger 200'), ('069500', 'KODEX 200'),
-        ('000100', '유한양행'), ('005935', '삼성전자우'), 
-        ('086790', 'KB금융'), ('229200', 'KODEX 코스닥150'), 
-        ('437730', '삼현'), ('005385', '현대차우'), 
-        ('103590', '일진전기'), ('037620', '미래에셋증권')
-    ]
-
-# 사이드바 관리
-with st.sidebar:
-    st.header("📍 종목 관리")
-    new_ticker = st.text_input("종목코드", placeholder="예: 005930")
-    new_name = st.text_input("종목명", placeholder="예: 삼성전자")
-    if st.button("➕ 추가"):
-        if new_ticker and new_name:
-            st.session_state.tickers.append((new_ticker.strip(), new_name.strip()))
-            st.rerun()
-    st.write("---")
-    for i, (t, n) in enumerate(st.session_state.tickers):
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"{n} ({t})")
-        if col2.button("🗑️", key=f"del_{i}"):
-            st.session_state.tickers.pop(i)
-            st.rerun()
-
-# 2. 데이터 수집 함수 (강력 보강)
-def get_safe_ohlcv(ticker, start, end):
-    # 경로 A: 일반 조회
+# 데이터 로드 함수 (구글 시트 연동)
+def load_tickers_from_sheet():
     try:
-        df = stock.get_market_ohlcv(start, end, ticker)
-        if df is not None and not df.empty:
-            return df
-    except:
-        pass
-    
-    # 경로 B: 우회 조회 (날짜 기준 강제 호출)
-    try:
-        time.sleep(0.5) # 서버 부하 방지 및 지연 시간 확보
-        df = stock.get_market_ohlcv_by_date(start, end, ticker)
-        if df is not None and not df.empty:
-            return df
-    except:
-        return None
+        df = pd.read_csv(SHEET_URL)
+        # 시트의 A열(ticker)과 B열(name)을 읽어옵니다.
+        return list(zip(df['ticker'].astype(str).str.zfill(6), df['name']))
+    except Exception as e:
+        st.error("구글 시트를 읽어오지 못했습니다. 시트 우측 상단 [공유] 버튼을 눌러 '링크가 있는 모든 사용자'가 볼 수 있게 설정했는지 확인해주세요!")
+        return []
 
-def get_report():
+def get_report(tickers):
     now_k = datetime.now(KST)
     today = now_k.strftime("%Y%m%d")
     start_date = (now_k - timedelta(days=250)).strftime("%Y%m%d")
 
     results = []
-    for ticker, name in st.session_state.tickers:
-        clean_ticker = str(ticker).strip().zfill(6)
-        df = get_safe_ohlcv(clean_ticker, start_date, today)
-        
-        if df is not None and not df.empty:
-            try:
+    for ticker, name in tickers:
+        try:
+            # KRX 서버에서 데이터 가져오기
+            df = stock.get_market_ohlcv(start_date, today, ticker)
+            if df is not None and not df.empty:
                 curr = int(df['종가'].iloc[-1])
                 high = int(df['고가'].max())
                 s10, s15 = int(high * 0.9), int(high * 0.85)
                 status = "🚨위험" if curr <= s15 else "⚠️주의" if curr <= s10 else "✅안정"
                 results.append({'종목명': name, '현재가': curr, '기준고점': high, '손절(-10%)': s10, '손절(-15%)': s15, '상태': status})
-            except:
-                results.append({'종목명': name, '현재가': "계산에러", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "오류"})
-        else:
-            results.append({'종목명': name, '현재가': "조회실패", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "재시도요망"})
-            
+            else:
+                results.append({'종목명': name, '현재가': "조회실패", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "데이터없음"})
+        except:
+            results.append({'종목명': name, '현재가': "에러", '기준고점': "-", '손절(-10%)': "-", '손절(-15%)': "-", '상태': "오류"})
     return pd.DataFrame(results)
 
 def highlight_status(val):
@@ -93,11 +57,17 @@ def highlight_status(val):
     if val == "✅안정": return 'background-color: #d4edda'
     return ''
 
-# 메인 버튼
+# 메인 실행부
 if st.button("🔄 리포트 갱신"):
-    with st.spinner('미래에셋 포함 전 종목 정밀 분석 중...'):
-        df_result = get_report()
-        if not df_result.empty:
-            st.dataframe(df_result.style.map(highlight_status, subset=['상태']), use_container_width=True)
-            now_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
-            st.success(f"업데이트 완료 (한국시간): {now_str}")
+    with st.spinner('구글 시트에서 목록을 읽어 분석 중...'):
+        current_tickers = load_tickers_from_sheet()
+        if current_tickers:
+            df_result = get_report(current_tickers)
+            if not df_result.empty:
+                st.dataframe(df_result.style.map(highlight_status, subset=['상태']), use_container_width=True)
+                now_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+                st.success(f"업데이트 완료 (한국시간): {now_str}")
+        else:
+            st.warning("시트에 등록된 종목이 없습니다.")
+
+st.info("💡 종목 수정은 구글 시트에서 하시면 됩니다. (A열: 티커, B열: 종목명)")
