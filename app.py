@@ -14,32 +14,32 @@ KST = pytz.timezone('Asia/Seoul')
 
 def get_final_report():
     try:
-        # 1. 구글 시트 읽기 (헤더가 없어도 위치로 파악하도록 함)
         df = pd.read_csv(SHEET_URL)
-        
-        # 2. 열 이름 강제 재지정 (A:코드, B:명칭, C:현재가, D:고점, E:-10%, F:-15%)
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)']
         
-        # 3. 숫자로 확실히 변환 (문자열 섞임 방지)
         for col in ['현재가', '기준고점', '손절(-10%)', '손절(-15%)']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # 4. 상태 판정 로직 (가장 중요 ⭐)
+        # --- 판정 로직 수정 시작 ---
         def calc_status(row):
-            if pd.isna(row['현재가']) or pd.isna(row['손절(-10%)']):
+            if pd.isna(row['현재가']) or pd.isna(row['기준고점']):
                 return "조회중"
             
             curr = float(row['현재가'])
             s10 = float(row['손절(-10%)'])
             s15 = float(row['손절(-15%)'])
             
-            # 판정 기준: -15% 이하면 위험, -10% 이하면 주의, 그 이상은 안정
+            # 더 민감한 판정: 
+            # 1. 현재가가 손절(-15%) 가격보다 낮거나 같으면 무조건 위험
             if curr <= s15:
                 return "🚨위험"
+            # 2. 현재가가 손절(-10%) 가격보다 낮거나 같으면 주의
             elif curr <= s10:
                 return "⚠️주의"
+            # 3. 그 외엔 안정
             else:
                 return "✅안정"
+        # --- 판정 로직 수정 끝 ---
             
         df['상태'] = df.apply(calc_status, axis=1)
         return df
@@ -66,4 +66,4 @@ if st.button("🔄 실시간 데이터 동기화"):
             now_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
             st.success(f"최신화 완료: {now_str}")
 
-st.info("💡 이제 삼현이나 현대차우처럼 고점 대비 많이 떨어진 종목은 자동으로 위험/주의가 뜹니다.")
+st.info("💡 종목 관리는 구글 시트에서 하시고, 버튼을 누르면 즉시 동기화됩니다.")
