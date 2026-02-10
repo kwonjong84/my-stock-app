@@ -56,7 +56,7 @@ def get_safe_ohlcv(ticker, start, end):
     
     # 경로 B: 우회 조회 (날짜 기준 강제 호출)
     try:
-        time.sleep(0.2) # 서버 부하 방지
+        time.sleep(0.5) # 서버 부하 방지 및 지연 시간 확보
         df = stock.get_market_ohlcv_by_date(start, end, ticker)
         if df is not None and not df.empty:
             return df
