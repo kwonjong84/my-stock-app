@@ -12,7 +12,7 @@ KST = pytz.timezone('Asia/Seoul')
 
 st.set_page_config(page_title="주식 손절선 관리 PLUS (Hybrid)", layout="wide")
 
-# 2. 야후 파이낸스 고가 보정 함수
+# 2. 데이터 처리 및 보정
 def get_yahoo_high(ticker_code, google_high):
     try:
         if len(str(ticker_code)) == 6:
@@ -25,12 +25,9 @@ def get_yahoo_high(ticker_code, google_high):
     except:
         return google_high
 
-# 3. 데이터 로드 및 처리
 def get_data():
     try:
         raw_df = pd.read_csv(SHEET_URL)
-        
-        # 지수 추출
         try:
             mkt_idx = raw_df.iloc[0, 7]
             mkt_chg = raw_df.iloc[1, 7]
@@ -43,8 +40,7 @@ def get_data():
         for col in ['현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # 야후 데이터 보정
-        with st.spinner('실시간 고점 동기화 중 (Yahoo Finance)...'):
+        with st.spinner('실시간 고점 동기화 중...'):
             df['기준고점'] = df.apply(lambda row: get_yahoo_high(row['코드'], row['기준고점']), axis=1)
             df['기준고점'] = df[['현재가', '기준고점']].max(axis=1)
 
@@ -70,36 +66,46 @@ if st.button("🔄 데이터 강제 업데이트"):
 
 final_df, mkt_idx, mkt_chg = get_data()
 
-# 지수 영역 (카드 형태로 개선)
 if mkt_idx != 0:
-    st.metric("KOSPI 지수", f"{mkt_idx:,.2f}", f"{mkt_chg:.2%}", delta_color="normal")
+    st.metric("KOSPI 지수", f"{mkt_idx:,.2f}", f"{mkt_chg:.2%}")
 
 if not final_df.empty:
     st.subheader("종목별 실시간 리포트")
     
-    # 1. 등락률 색상 지정 (한국형: 상승-빨강, 하락-파랑)
-    def style_variation(val):
-        color = '#ff4b4b' if val > 0 else '#31333f'
-        if val < 0: color = '#1c83e1'
-        return f'color: {color}; font-weight: bold'
+    # 1. 스타일 정의
+    def style_df(styler):
+        # 전체 텍스트 컬러 및 정렬
+        styler.set_properties(**{'text-align': 'center'})
+        
+        # 현재가 열: 가독성을 위해 배경색 제거하고 폰트 크기 및 두께만 강조
+        styler.set_properties(subset=['현재가'], **{
+            'color': '#00d1ff',  # 형광 파란색으로 포인트
+            'font-weight': '900',
+            'font-size': '1.2em'
+        })
+        
+        # 등락률 색상 (상승 빨강, 하락 파랑)
+        def color_rate(val):
+            color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
+            return f'color: {color}; font-weight: bold'
+        styler.applymap(color_rate, subset=['등락률'])
+        
+        # 상태 열 배경색
+        def color_status(val):
+            if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
+            if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
+            return 'background-color: #28a745; color: white; font-weight: bold'
+        styler.applymap(color_status, subset=['상태'])
+        
+        return styler
 
-    # 2. 현재가 열 강조 스타일
-    current_price_style = 'background-color: #f0f2f6; color: #0e1117; font-size: 1.1em; font-weight: 900;'
-
-    # 화면용 데이터프레임 가공
     display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
     
     st.dataframe(
-        display_df.style.format({
+        style_df(display_df.style.format({
             '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
             '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
-        })
-        .set_properties(subset=['현재가'], **{'background-color': '#f0f2f6', 'font-weight': '900'})
-        .applymap(style_variation, subset=['등락률'])
-        .map(lambda x: 
-            'background-color: #ff4b4b; color: white; font-weight: bold' if x == "🚨위험" 
-            else ('background-color: #ffa421; color: black;' if x == "⚠️주의" 
-            else 'background-color: #28a745; color: white;'), subset=['상태']),
+        })),
         use_container_width=True,
         height=600
     )
