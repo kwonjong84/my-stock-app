@@ -68,7 +68,7 @@ def get_data():
         return pd.DataFrame(), 0, 0
 
 # --- UI 레이아웃 (이후 동일) ---
-st.title("📊 하이브리드 주식 모니터링")
+st.title("📊 주식 모니터링")
 st.caption(f"최종 동기화 시각 (KST): {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}")
 
 if st.button("🔄 데이터 강제 업데이트"):
