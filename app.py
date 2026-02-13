@@ -6,7 +6,8 @@ import yfinance as yf
 import requests
 from datetime import datetime
 
-# 1. 환경 설정 및 텔레그램 개인 정보 (반드시 변수로 정의해야 에러가 안 납니다)
+# 1. 환경 설정 및 텔레그램 개인 정보
+# 반드시 변수로 정의해야 f-string 콜론(:) 에러가 발생하지 않습니다.
 TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
 TELEGRAM_CHAT_ID = "63395333"
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
@@ -15,10 +16,9 @@ KST = pytz.timezone('Asia/Seoul')
 
 st.set_page_config(page_title="주식 손절 감시 시스템", layout="wide")
 
-# 2. 텔레그램 발송 함수 (f-string 오류 수정 완료)
+# 2. 텔레그램 발송 함수
 def send_telegram_msg(message):
     try:
-        # 토큰 변수를 사용해 중괄호{} 안의 콜론 문제를 해결함
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         params = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         requests.get(url, params=params)
@@ -33,13 +33,13 @@ def get_data():
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
         with st.spinner('실시간 시세 감시 및 알림 체크 중...'):
-            # 코스피 실시간 지수 호출 (야후 티커 ^KS11)
+            # 실시간 지수 호출
             yf_idx = yf.Ticker("^KS11")
             idx_data = yf_idx.history(period="1d", interval="1m").tail(1)
             mkt_idx = idx_data['Close'].iloc[-1] if not idx_data.empty else 0
             
             for i, row in df.iterrows():
-                # 야후 파이낸스 실시간 호출 (1분 간격 최신 데이터)
+                # 야후 파이낸스 실시간 호출
                 yf_ticker = yf.Ticker(f"{row['코드']}.KS")
                 data = yf_ticker.history(period="1d", interval="1m").tail(1)
                 if not data.empty:
@@ -47,11 +47,9 @@ def get_data():
                     high = data['High'].iloc[-1]
                     
                     df.at[i, '현재가'] = curr
-                    # 시트 고점과 실시간 고점 중 더 높은 것 유지
                     sheet_high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
                     df.at[i, '기준고점'] = max(sheet_high, high, curr)
 
-        # 수치 변환 및 손절선 계산
         for col in ['현재가', '기준고점']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
@@ -71,5 +69,54 @@ def get_data():
         return pd.DataFrame(), 0
 
 # --- 실행 및 알림 로직 ---
+# 오류가 났던 st.session_state 부분을 수정했습니다.
 if "alert_history" not in st.session_state:
-    st.session_
+    st.session_state.alert_history = []
+
+final_df, mkt_idx = get_data()
+
+# 위험 종목 알림 체크
+if not final_df.empty:
+    danger_stocks = final_df[final_df['상태'] == "🚨위험"]
+    for _, s in danger_stocks.iterrows():
+        alert_key = f"{s['종목명']}_{s['상태']}"
+        if alert_key not in st.session_state.alert_history:
+            msg = f"‼️ [손절 경보] ‼️\n종목: {s['종목명']}\n현재가: {s['현재가']:,.0f}\n기준고점: {s['기준고점']:,.0f}\n즉시 차트를 확인하세요!"
+            send_telegram_msg(msg)
+            st.session_state.alert_history.append(alert_key)
+
+# --- UI 출력 ---
+st.title("📊 실시간 주식 감시 & 알림 시스템")
+st.caption(f"최종 동기화 시각 (KST): {datetime.now(KST).strftime('%H:%M:%S')}")
+
+if st.button("🔄 실시간 시세 새로고침"):
+    st.rerun()
+
+if mkt_idx > 0:
+    st.metric("KOSPI 실시간 지수", f"{mkt_idx:,.2f}")
+
+if not final_df.empty:
+    def style_df(styler):
+        styler.set_properties(**{'text-align': 'center'})
+        styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': '900', 'font-size': '1.2em'})
+        
+        def color_rate(val):
+            color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
+            return f'color: {color}; font-weight: bold'
+        styler.applymap(color_rate, subset=['등락률'])
+        
+        def color_status(val):
+            if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
+            if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
+            return 'background-color: #28a745; color: white; font-weight: bold'
+        styler.applymap(color_status, subset=['상태'])
+        return styler
+
+    display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
+    st.dataframe(
+        style_df(display_df.style.format({
+            '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
+            '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
+        })),
+        use_container_width=True, height=600
+    )
