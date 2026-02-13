@@ -1,4 +1,4 @@
-pandas==2.1.4
-pykrx
+streamlit
+pandas
 pytz
-setuptools==69.0.2
+yfinance
