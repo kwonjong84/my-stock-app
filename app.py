@@ -18,8 +18,8 @@ st.set_page_config(page_title="주식 손절 감시 시스템", layout="wide")
 # 2. 텔레그램 발송 함수
 def send_telegram_msg(message):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        url = f"https://api.telegram.org/bot{7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM}/sendMessage"
+        params = {"chat_id": 63395333, "text": message}
         requests.get(url, params=params)
     except Exception as e:
         st.error(f"알림 전송 실패: {e}")
