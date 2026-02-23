@@ -1,152 +1,66 @@
 import streamlit as st
-import pandas as pd
-import pytz
-import time
 import yfinance as yf
-import requests
-import os
-import html
+import pandas as pd
 from datetime import datetime
 
-# 1. 환경 설정
-TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
-TELEGRAM_CHAT_ID = "63395333"
-SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0&t={int(time.time())}"
-KST = pytz.timezone('Asia/Seoul')
-PRICE_LOG = "last_price_log.txt"
+# [핵심: 효율적 데이터 관리와 직관적 UI] - Persona: 비판적 참모
+st.set_page_config(page_title="Global Stock Monitor", layout="wide")
 
-st.set_page_config(page_title="주식 감시 시스템 Pro (컬러 복구)", layout="wide")
-
-# 2. 저장소 로직
-def get_saved_price(stock_name):
-    if os.path.exists(PRICE_LOG):
-        with open(PRICE_LOG, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    parts = line.strip().split(",")
-                    if len(parts) == 2 and parts[0] == stock_name: return float(parts[1])
-                except: continue
-    return 0.0
-
-def save_price(stock_name, price):
-    prices = {}
-    if os.path.exists(PRICE_LOG):
-        with open(PRICE_LOG, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    parts = line.strip().split(",")
-                    if len(parts) == 2: prices[parts[0]] = parts[1]
-                except: continue
-    prices[stock_name] = str(price)
-    with open(PRICE_LOG, "w", encoding="utf-8") as f:
-        for name, p in prices.items(): f.write(f"{name},{p}\n")
-
-# 3. 텔레그램 발송 (2중 안전장치 유지)
-def send_telegram_msg(message):
+# 1. 데이터 호출 최적화 (캐싱 설정)
+@st.cache_data(ttl=300) # 5분간 데이터를 보관하여 서버 차단 방지
+def fetch_data(tickers):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        resp = requests.get(url, params=params, timeout=10)
-        if not resp.json().get("ok"):
-            clean_text = message.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","")
-            requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": "[일반텍스트전송]\n" + clean_text})
-    except: pass
-
-# 4. 데이터 로드 (캐싱 및 지수 포함)
-@st.cache_data(ttl=60)
-def get_market_info(ticker_symbol):
-    try:
-        t = yf.Ticker(ticker_symbol)
-        h = t.history(period="2d", interval="1m")
-        if not h.empty:
-            curr = h['Close'].iloc[-1]
-            prev = t.info.get('previousClose', curr)
-            return curr, (curr - prev) / prev
-    except: pass
-    return 0, 0
-
-def get_data():
-    try:
-        raw_df = pd.read_csv(SHEET_URL)
-        df = raw_df.iloc[:, :7].copy()
-        df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
-        
-        kospi_p, kospi_r = get_market_info("^KS11")
-        kosdaq_p, kosdaq_r = get_market_info("^KQ11")
-            
-        progress_bar = st.progress(0, text="시세 데이터를 동기화 중...")
-        for i, row in df.iterrows():
-            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 로딩 중")
-            t = yf.Ticker(f"{row['코드']}.KS")
-            d = t.history(period="1d", interval="1m").tail(1)
-            if not d.empty:
-                curr = d['Close'].iloc[-1]
-                high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
-                df.at[i, '현재가'] = curr
-                df.at[i, '기준고점'] = max(high, curr)
-                prev = t.info.get('previousClose', curr)
-                df.at[i, '등락률'] = (curr - prev) / prev
-            time.sleep(0.1)
-        progress_bar.empty()
-
-        for col in ['현재가', '기준고점', '등락률']: df[col] = pd.to_numeric(df[col], errors='coerce')
-        df['손절(-10%)'] = df['기준고점'] * 0.9
-        df['손절(-15%)'] = df['기준고점'] * 0.85
-        df['상태'] = df.apply(lambda r: "🚨위험" if r['현재가'] <= r['손절(-15%)'] else "⚠️주의" if r['현재가'] <= r['손절(-10%)'] else "✅안정", axis=1)
-        
-        return df, (kospi_p, kospi_r), (kosdaq_p, kosdaq_r)
+        # 여러 종목을 한 번에 호출하여 통신 횟수 최소화
+        data = yf.download(tickers, period="5d", interval="1d", group_by='ticker', progress=False)
+        return data
     except Exception as e:
-        st.error(f"오류 발생: {e}")
-        return pd.DataFrame(), (0,0), (0,0)
+        st.error(f"데이터 로드 실패: {e}")
+        return None
 
-# 5. 실행 및 알림
-final_df, kospi, kosdaq = get_data()
+# 2. 사이드바 - 설정 및 관리
+st.sidebar.title("🛠️ 감시 설정")
+watchlist = st.sidebar.text_input("감시 종목 (쉼표로 구분)", "TSLA, NVDA, AAPL, MSFT").upper().replace(" ", "").split(",")
+auto_refresh = st.sidebar.checkbox("자동 새로고침 모드 (5분 단위)")
 
-if not final_df.empty:
-    for _, s in final_df[final_df['상태'] == "🚨위험"].iterrows():
-        last_p = get_saved_price(s['종목명'])
-        if last_p == 0 or s['현재가'] <= last_p * 0.97:
-            s_name = html.escape(str(s['종목명']))
-            emoji = "🔴" if s['등락률'] > 0 else "🔵"
-            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s_name}\n<b>현재가:</b> {s['현재가']:,.0f}원 ({emoji} {s['등락률']:+.2%})\n<b>시장:</b> KOSPI {kospi[0]:,.2f} / KOSDAQ {kosdaq[0]:,.2f}"
-            send_telegram_msg(msg)
-            save_price(s['종목명'], s['현재가'])
+# 3. 메인 대시보드
+st.title("📈 해외 주식 실시간 모니터링")
+st.caption(f"최종 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (5분마다 자동 갱신 권장)")
 
-# 6. UI 시각화 (컬러 복구 섹션)
-st.title("📊 주식 실시간 감시 (컬러 UI)")
-st.caption(f"최종 업데이트: {datetime.now(KST).strftime('%H:%M:%S')}")
-
-if st.button("🔄 즉시 새로고침"):
-    st.cache_data.clear()
-    st.rerun()
-
-c1, c2 = st.columns(2)
-with c1: st.metric("KOSPI", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
-with c2: st.metric("KOSDAQ", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
-
-# 스타일 정의 함수
-def apply_color_style(styler):
-    # 등락률 컬러 (빨강/파랑)
-    def color_rate(val):
-        color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
-        return f'color: {color}; font-weight: bold'
+if watchlist:
+    all_data = fetch_data(watchlist)
     
-    # 상태 배경색
-    def color_status(val):
-        if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
-        if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
-        return 'background-color: #28a745; color: white; font-weight: bold'
+    if all_data is not None:
+        # 종목별 카드 배치
+        cols = st.columns(len(watchlist))
+        
+        for i, ticker in enumerate(watchlist):
+            with cols[i]:
+                try:
+                    # 단일 종목 데이터 추출 (yfinance 구조 대응)
+                    if len(watchlist) > 1:
+                        ticker_data = all_data[ticker]
+                    else:
+                        ticker_data = all_data
+                    
+                    current_price = ticker_data['Close'].iloc[-1]
+                    prev_price = ticker_data['Close'].iloc[-2]
+                    delta = current_price - prev_price
+                    delta_percent = (delta / prev_price) * 100
+                    
+                    st.metric(label=ticker, 
+                              value=f"${current_price:.2f}", 
+                              delta=f"{delta:.2f} ({delta_percent:.2f}%)")
+                    
+                    # 차트 시각화
+                    st.line_chart(ticker_data['Close'], height=200)
+                except:
+                    st.error(f"{ticker} 분석 불가")
 
-    styler.applymap(color_rate, subset=['등락률'])
-    styler.applymap(color_status, subset=['상태'])
-    styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
-    return styler
-
-if not final_df.empty:
-    display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
-    styled_df = apply_color_style(display_df.style.format({
-        '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
-        '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
-    }))
-    st.dataframe(styled_df, use_container_width=True, height=600)
+# 4. 비판적 참모의 기술 점검
+st.divider()
+st.subheader("💡 시스템 진단")
+col1, col2 = st.columns(2)
+with col1:
+    st.info("**안정성:** 캐싱(TTL 300s) 적용 완료. 야후 서버로부터의 IP 차단 가능성을 최소화했습니다.")
+with col2:
+    st.warning("**한계점:** 현재 15분 지연 시세입니다. 내일 한투 API 연동 후 '0초 지연' 실시간 모드로 전환 예정입니다.")
