@@ -1,72 +1,152 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import pytz
+import time
+import yfinance as yf
+import requests
+import os
+import html
 from datetime import datetime
 
-# [핵심: 국내 주식 데이터 매칭 및 에러 방지] - Persona: 비판적 참모
-st.set_page_config(page_title="국내 주식 실시간 감시", layout="wide")
+# 1. 환경 설정
+TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
+TELEGRAM_CHAT_ID = "63395333"
+SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0&t={int(time.time())}"
+KST = pytz.timezone('Asia/Seoul')
+PRICE_LOG = "last_price_log.txt"
 
-# 1. 국내 주식 전용 데이터 호출 함수
-@st.cache_data(ttl=300)
-def fetch_korea_data(ticker_list):
-    # 한국 종목은 뒤에 .KS(코스피) 또는 .KQ(코스닥)가 붙어야 함
-    processed_tickers = []
-    for t in ticker_list:
-        if not (t.endswith('.KS') or t.endswith('.KQ')):
-            # 숫자로만 된 6자리 코드라면 보통 .KS를 기본으로 붙임
-            processed_tickers.append(f"{t}.KS")
-        else:
-            processed_tickers.append(t)
-            
-    try:
-        data = yf.download(processed_tickers, period="5d", interval="1d", group_by='ticker', progress=False)
-        return data, processed_tickers
-    except Exception as e:
-        return None, processed_tickers
+st.set_page_config(page_title="주식 감시 시스템 Pro (컬러 복구)", layout="wide")
 
-# 2. 메인 화면 구성
-st.title("🇰🇷 국내 주식 모니터링 (ISA 계좌용)")
-st.caption(f"조회 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# 3. 종목 설정 (삼성전자, 현대차, 그리고 사용자님의 종목들)
-# 종목코드 예: 삼성전자(005930), 현대차(005380), SK하이닉스(000660)
-default_stocks = "005930, 005380, 000660" 
-watchlist_input = st.sidebar.text_input("종목코드 입력 (6자리, 쉼표 구분)", default_stocks)
-watchlist = [t.strip() for t in watchlist_input.split(",")]
-
-if watchlist:
-    all_data, final_tickers = fetch_korea_data(watchlist)
-    
-    if all_data is not None:
-        cols = st.columns(len(final_tickers))
-        
-        for i, ticker in enumerate(final_tickers):
-            with cols[i]:
+# 2. 저장소 로직
+def get_saved_price(stock_name):
+    if os.path.exists(PRICE_LOG):
+        with open(PRICE_LOG, "r", encoding="utf-8") as f:
+            for line in f:
                 try:
-                    # 데이터 추출
-                    ticker_data = all_data[ticker] if len(final_tickers) > 1 else all_data
-                    
-                    if ticker_data.empty:
-                        st.error(f"{ticker} 데이터 없음")
-                        continue
-                        
-                    current_price = ticker_data['Close'].iloc[-1]
-                    prev_price = ticker_data['Close'].iloc[-2]
-                    delta = current_price - prev_price
-                    
-                    # 한국 주식은 원화(₩)로 표기
-                    st.metric(label=ticker, 
-                              value=f"{int(current_price):,}원", 
-                              delta=f"{int(delta):,}원")
-                    
-                    st.line_chart(ticker_data['Close'])
-                except Exception as e:
-                    st.error(f"{ticker} 표시 오류")
+                    parts = line.strip().split(",")
+                    if len(parts) == 2 and parts[0] == stock_name: return float(parts[1])
+                except: continue
+    return 0.0
 
-# 4. 비판적 참모의 한마디
-st.divider()
-st.info("""
-**💡 참모의 조언:** 1. 현재 `005930.KS` 처럼 코드가 보일 것입니다. 이는 야후 파이낸스 방식입니다.
-2. 내일 **한투 API**를 연결하면 `.KS` 같은 복잡한 접미사 없이 **'삼성전자'**라는 이름과 정밀한 데이터를 바로 띄울 수 있습니다.
-3. 지금은 숫자로 된 종목코드 6자리만 입력해 주세요.
-""")
+def save_price(stock_name, price):
+    prices = {}
+    if os.path.exists(PRICE_LOG):
+        with open(PRICE_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    parts = line.strip().split(",")
+                    if len(parts) == 2: prices[parts[0]] = parts[1]
+                except: continue
+    prices[stock_name] = str(price)
+    with open(PRICE_LOG, "w", encoding="utf-8") as f:
+        for name, p in prices.items(): f.write(f"{name},{p}\n")
+
+# 3. 텔레그램 발송 (2중 안전장치 유지)
+def send_telegram_msg(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        resp = requests.get(url, params=params, timeout=10)
+        if not resp.json().get("ok"):
+            clean_text = message.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","")
+            requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": "[일반텍스트전송]\n" + clean_text})
+    except: pass
+
+# 4. 데이터 로드 (캐싱 및 지수 포함)
+@st.cache_data(ttl=60)
+def get_market_info(ticker_symbol):
+    try:
+        t = yf.Ticker(ticker_symbol)
+        h = t.history(period="2d", interval="1m")
+        if not h.empty:
+            curr = h['Close'].iloc[-1]
+            prev = t.info.get('previousClose', curr)
+            return curr, (curr - prev) / prev
+    except: pass
+    return 0, 0
+
+def get_data():
+    try:
+        raw_df = pd.read_csv(SHEET_URL)
+        df = raw_df.iloc[:, :7].copy()
+        df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
+        
+        kospi_p, kospi_r = get_market_info("^KS11")
+        kosdaq_p, kosdaq_r = get_market_info("^KQ11")
+            
+        progress_bar = st.progress(0, text="시세 데이터를 동기화 중...")
+        for i, row in df.iterrows():
+            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 로딩 중")
+            t = yf.Ticker(f"{row['코드']}.KS")
+            d = t.history(period="1d", interval="1m").tail(1)
+            if not d.empty:
+                curr = d['Close'].iloc[-1]
+                high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+                df.at[i, '현재가'] = curr
+                df.at[i, '기준고점'] = max(high, curr)
+                prev = t.info.get('previousClose', curr)
+                df.at[i, '등락률'] = (curr - prev) / prev
+            time.sleep(0.1)
+        progress_bar.empty()
+
+        for col in ['현재가', '기준고점', '등락률']: df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['손절(-10%)'] = df['기준고점'] * 0.9
+        df['손절(-15%)'] = df['기준고점'] * 0.85
+        df['상태'] = df.apply(lambda r: "🚨위험" if r['현재가'] <= r['손절(-15%)'] else "⚠️주의" if r['현재가'] <= r['손절(-10%)'] else "✅안정", axis=1)
+        
+        return df, (kospi_p, kospi_r), (kosdaq_p, kosdaq_r)
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
+        return pd.DataFrame(), (0,0), (0,0)
+
+# 5. 실행 및 알림
+final_df, kospi, kosdaq = get_data()
+
+if not final_df.empty:
+    for _, s in final_df[final_df['상태'] == "🚨위험"].iterrows():
+        last_p = get_saved_price(s['종목명'])
+        if last_p == 0 or s['현재가'] <= last_p * 0.97:
+            s_name = html.escape(str(s['종목명']))
+            emoji = "🔴" if s['등락률'] > 0 else "🔵"
+            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s_name}\n<b>현재가:</b> {s['현재가']:,.0f}원 ({emoji} {s['등락률']:+.2%})\n<b>시장:</b> KOSPI {kospi[0]:,.2f} / KOSDAQ {kosdaq[0]:,.2f}"
+            send_telegram_msg(msg)
+            save_price(s['종목명'], s['현재가'])
+
+# 6. UI 시각화 (컬러 복구 섹션)
+st.title("📊 주식 실시간 감시 (컬러 UI)")
+st.caption(f"최종 업데이트: {datetime.now(KST).strftime('%H:%M:%S')}")
+
+if st.button("🔄 즉시 새로고침"):
+    st.cache_data.clear()
+    st.rerun()
+
+c1, c2 = st.columns(2)
+with c1: st.metric("KOSPI", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
+with c2: st.metric("KOSDAQ", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
+
+# 스타일 정의 함수
+def apply_color_style(styler):
+    # 등락률 컬러 (빨강/파랑)
+    def color_rate(val):
+        color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
+        return f'color: {color}; font-weight: bold'
+    
+    # 상태 배경색
+    def color_status(val):
+        if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
+        if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
+        return 'background-color: #28a745; color: white; font-weight: bold'
+
+    styler.applymap(color_rate, subset=['등락률'])
+    styler.applymap(color_status, subset=['상태'])
+    styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
+    return styler
+
+if not final_df.empty:
+    display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
+    styled_df = apply_color_style(display_df.style.format({
+        '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
+        '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
+    }))
+    st.dataframe(styled_df, use_container_width=True, height=600)
