@@ -13,19 +13,21 @@ TELEGRAM_CHAT_ID = "63395333"
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0&t={int(time.time())}"
 KST = pytz.timezone('Asia/Seoul')
-PRICE_LOG = "last_price_log.txt" # 가격 저장용 파일
+PRICE_LOG = "last_price_log.txt"
 
 st.set_page_config(page_title="주식 손절 감시 시스템 Pro", layout="wide")
 
-# 2. 영구 저장소 로직 (파일 읽기/쓰기)
+# 2. 영구 저장소 로직 (알림 중복 방지)
 def get_saved_price(stock_name):
     if os.path.exists(PRICE_LOG):
         with open(PRICE_LOG, "r", encoding="utf-8") as f:
             for line in f:
-                name, price = line.strip().split(",")
-                if name == stock_name:
-                    return float(price)
-    return 999999999.0 # 기록 없으면 매우 높은 가격 반환
+                try:
+                    name, price = line.strip().split(",")
+                    if name == stock_name:
+                        return float(price)
+                except: continue
+    return 0.0 # 9억 대신 0으로 설정하여 첫 실행 시 알림 제어 가능
 
 def save_price(stock_name, price):
     prices = {}
@@ -41,29 +43,38 @@ def save_price(stock_name, price):
         for name, p in prices.items():
             f.write(f"{name},{p}\n")
 
-# 3. 텔레그램 발송 함수
+# 3. 텔레그램 발송 함수 (HTML 에러 방지 처리)
 def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        # HTML 파싱 모드 적용
+        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
         requests.get(url, params=params)
-    except: pass
+    except Exception as e:
+        st.error(f"텔레그램 발송 실패: {e}")
 
 # 4. 데이터 로드 및 실시간 동기화
+def get_market_index(ticker_symbol):
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        hist = ticker.history(period="2d", interval="1m")
+        if not hist.empty:
+            curr = hist['Close'].iloc[-1]
+            prev = ticker.info.get('previousClose', curr)
+            rate = (curr - prev) / prev
+            return curr, rate
+    except: pass
+    return 0, 0
+
 def get_data():
     try:
         raw_df = pd.read_csv(SHEET_URL)
         df = raw_df.iloc[:, :7].copy()
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
-        yf_idx = yf.Ticker("^KS11")
-        idx_hist = yf_idx.history(period="2d", interval="1m")
-        if not idx_hist.empty:
-            mkt_idx = idx_hist['Close'].iloc[-1]
-            prev_close = yf_idx.info.get('previousClose', mkt_idx)
-            mkt_chg_rate = (mkt_idx - prev_close) / prev_close
-        else:
-            mkt_idx, mkt_chg_rate = 0, 0
+        # 지수 정보 (코스피, 코스닥)
+        kospi_p, kospi_r = get_market_index("^KS11")
+        kosdaq_p, kosdaq_r = get_market_index("^KQ11")
             
         for i, row in df.iterrows():
             yf_ticker = yf.Ticker(f"{row['코드']}.KS")
@@ -80,39 +91,55 @@ def get_data():
             df[col] = pd.to_numeric(df[col], errors='coerce')
         df['손절(-10%)'] = df['기준고점'] * 0.9
         df['손절(-15%)'] = df['기준고점'] * 0.85
+        
         def calc_status(row):
             if row['현재가'] <= row['손절(-15%)']: return "🚨위험"
             elif row['현재가'] <= row['손절(-10%)']: return "⚠️주의"
             return "✅안정"
         df['상태'] = df.apply(calc_status, axis=1)
-        return df, mkt_idx, mkt_chg_rate
-    except: return pd.DataFrame(), 0, 0
+        
+        return df, (kospi_p, kospi_r), (kosdaq_p, kosdaq_r)
+    except: return pd.DataFrame(), (0,0), (0,0)
 
-# --- 5. 알림 로직 (파일 기반 영구 기억) ---
-final_df, mkt_idx, mkt_chg_rate = get_data()
+# --- 5. 실행 및 알림 로직 ---
+final_df, kospi, kosdaq = get_data()
 
 if not final_df.empty:
     danger_stocks = final_df[final_df['상태'] == "🚨위험"]
     for _, s in danger_stocks.iterrows():
         name = s['종목명']
         current_p = s['현재가']
-        last_p = get_saved_price(name) # 파일에서 불러오기
+        rate = s['등락률']
+        last_p = get_saved_price(name)
         
-        # 3% 추가 하락 엄격 체크
-        if current_p <= last_p * 0.97:
-            msg = f"‼️ [하락 경보] ‼️\n종목: {name}\n현재가: {current_p:,.0f}\n(추가 3% 하락 시에만 재알림)"
+        # 첫 실행(last_p=0)이거나 3% 이상 추가 하락했을 때만 발송
+        if last_p == 0 or current_p <= last_p * 0.97:
+            emoji = "🔴" if rate > 0 else "🔵"
+            msg = (
+                f"<b>‼️ [하락 경보] ‼️</b>\n\n"
+                f"<b>종목:</b> {name}\n"
+                f"<b>현재가:</b> {current_p:,.0f}원 ({emoji} {rate:+.2%})\n"
+                f"<b>코스피:</b> {kospi[0]:,.2f} ({kospi[1]:+.2%})\n"
+                f"<b>코스닥:</b> {kosdaq[0]:,.2f} ({kosdaq[1]:+.2%})\n\n"
+                f"<i>(이전 알림 대비 3% 추가 하락 시 재알림)</i>"
+            )
             send_telegram_msg(msg)
-            save_price(name, current_p) # 파일에 저장
+            save_price(name, current_p)
 
 # --- 6. UI 디자인 복구 ---
 st.title("📊 실시간 주식 감시 시스템 (영구 기억)")
-st.caption(f"동기화 시각: {datetime.now(KST).strftime('%H:%M:%S')} | 중복 알림 방지 가동 중")
+st.caption(f"동기화 시각: {datetime.now(KST).strftime('%H:%M:%S')} | 중복 알림 방지 로직 가동 중")
 
 if st.button("🔄 시세 새로고침"):
     st.rerun()
 
-if mkt_idx > 0:
-    st.metric("KOSPI 실시간 지수", f"{mkt_idx:,.2f}", f"{mkt_chg_rate:.2%}")
+col1, col2 = st.columns(2)
+with col1:
+    if kospi[0] > 0:
+        st.metric("KOSPI 지수", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
+with col2:
+    if kosdaq[0] > 0:
+        st.metric("KOSDAQ 지수", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
 
 if not final_df.empty:
     def style_df(styler):
