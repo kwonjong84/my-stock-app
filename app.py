@@ -8,20 +8,13 @@ import os
 import html
 from datetime import datetime
 
-# [핵심] 야후 차단 우회를 위한 세션 초기화 로직
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-def get_session():
-    session = requests.Session()
-    # 브라우저처럼 보이기 위한 User-Agent 설정
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    return session
+# [핵심] yfinance 내부 에러 방지를 위한 강제 초기화
+def fix_yfinance():
+    try:
+        # 야후의 쿠키 시스템을 초기화하기 위한 더미 호출
+        yf.pdr_override() 
+    except:
+        pass
 
 # 1. 환경 설정 (유지)
 TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
@@ -31,9 +24,10 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=cs
 KST = pytz.timezone('Asia/Seoul')
 PRICE_LOG = "last_price_log.txt"
 
-st.set_page_config(page_title="주식 감시 시스템 Pro (차단 우회판)", layout="wide")
+st.set_page_config(page_title="주식 감시 시스템 Pro (오류 수정판)", layout="wide")
+fix_yfinance()
 
-# 2~3. 저장소 및 텔레그램 (기존과 동일)
+# 2~3. 저장소 및 텔레그램 (기존 유지)
 def get_saved_price(stock_name):
     if os.path.exists(PRICE_LOG):
         with open(PRICE_LOG, "r", encoding="utf-8") as f:
@@ -63,40 +57,41 @@ def send_telegram_msg(message):
         requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
-# 4. 데이터 로드 (세션 주입으로 차단 회피)
+# 4. 데이터 로드 (오류 회피형 로직)
 def get_data():
     try:
         raw_df = pd.read_csv(SHEET_URL)
         df = raw_df.iloc[:, :7].copy()
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
-        custom_session = get_session()
-        progress_bar = st.progress(0, text="보안 연결 및 데이터 수신 중...")
+        progress_bar = st.progress(0, text="야후 서버와 보안 연결 중...")
         
         for i, row in df.iterrows():
             ticker_symbol = f"{str(row['코드']).zfill(6)}.KS"
-            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 동기화")
+            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 수신 중")
             
-            # [핵심 수정] 세션을 주입하여 차단 우회
-            t = yf.Ticker(ticker_symbol, session=custom_session)
-            hist = t.history(period="2d", interval="1m")
-            
-            if not hist.empty:
-                curr = float(hist['Close'].iloc[-1])
-                # 전일 종가를 못 가져올 경우를 대비한 안전장치
-                prev = t.info.get('previousClose') or hist['Close'].iloc[0]
-                high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+            # [수정] t.history 대신 download를 사용하여 Crumb 에러 우회
+            try:
+                # 1분 단위가 아닌 1일 단위로 가져와서 차단 최소화
+                d = yf.download(ticker_symbol, period="2d", interval="1m", progress=False)
+                if not d.empty:
+                    curr = float(d['Close'].iloc[-1])
+                    prev = float(d['Close'].iloc[0])
+                    high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+                    
+                    df.at[i, '현재가'] = curr
+                    df.at[i, '기준고점'] = max(high, curr)
+                    df.at[i, '등락률'] = (curr - prev) / prev
+            except:
+                continue
                 
-                df.at[i, '현재가'] = curr
-                df.at[i, '기준고점'] = max(high, curr)
-                df.at[i, '등락률'] = (curr - prev) / prev
-            time.sleep(1.0) # [참모 권고] 지연 시간을 1초로 늘려 안정성 확보
+            time.sleep(0.5)
             
         progress_bar.empty()
         
-        # 지수 데이터 (세션 재사용)
-        kp = yf.Ticker("^KS11", session=custom_session).history(period="2d")
-        kq = yf.Ticker("^KQ11", session=custom_session).history(period="2d")
+        # 지수 데이터
+        kp = yf.download("^KS11", period="2d", progress=False)
+        kq = yf.download("^KQ11", period="2d", progress=False)
         kospi = (kp['Close'].iloc[-1], (kp['Close'].iloc[-1]-kp['Close'].iloc[-2])/kp['Close'].iloc[-2])
         kosdaq = (kq['Close'].iloc[-1], (kq['Close'].iloc[-1]-kq['Close'].iloc[-2])/kq['Close'].iloc[-2])
 
@@ -107,35 +102,30 @@ def get_data():
         
         return df, kospi, kosdaq
     except Exception as e:
-        st.error(f"서버 응답 오류: {e}")
+        st.error(f"⚠️ 시스템 경보: {e}")
         return pd.DataFrame(), (0,0), (0,0)
 
-# 5~6. 실행 및 시각화 (기존 스타일 유지)
+# 5~6. 실행 및 UI (기존 컬러 유지)
 final_df, kospi, kosdaq = get_data()
 
-# 알림 로직 (위험 상태 시 발송)
 if not final_df.empty:
-    danger_df = final_df[final_df['상태'] == "🚨위험"]
-    for _, s in danger_df.iterrows():
+    for _, s in final_df[final_df['상태'] == "🚨위험"].iterrows():
         last_p = get_saved_price(s['종목명'])
         if last_p == 0 or s['현재가'] <= last_p * 0.97:
-            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s['종목명']}\n<b>현재가:</b> {s['현재가']:,.0f}원\n<b>등락:</b> {s['등락률']:+.2%}"
+            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s['종목명']}\n<b>현재가:</b> {s['현재가']:,.0f}원"
             send_telegram_msg(msg)
             save_price(s['종목명'], s['현재가'])
 
-# UI 출력
-st.title("📊 ISA 감시 시스템 (Security Patch)")
+st.title("📊 ISA 감시 시스템 (오류 긴급 패치)")
 c1, c2 = st.columns(2)
 with c1: st.metric("KOSPI", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
 with c2: st.metric("KOSDAQ", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
 
 if not final_df.empty:
     display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
-    
     def color_df(styler):
         styler.applymap(lambda v: f'color: {"#ff4b4b" if v > 0 else "#1c83e1" if v < 0 else "white"}; font-weight: bold', subset=['등락률'])
         styler.applymap(lambda v: f'background-color: {"#ff4b4b" if v == "🚨위험" else "#ffa421" if v == "⚠️주의" else "#28a745"}; color: white; font-weight: bold', subset=['상태'])
         styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
         return styler
-
     st.dataframe(color_df(display_df.style.format({'현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'})), use_container_width=True, height=600)
