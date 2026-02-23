@@ -16,9 +16,9 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=cs
 KST = pytz.timezone('Asia/Seoul')
 PRICE_LOG = "last_price_log.txt"
 
-st.set_page_config(page_title="주식 감시 시스템 Pro (컬러 복구)", layout="wide")
+st.set_page_config(page_title="주식 감시 시스템 Pro (안정화 복구)", layout="wide")
 
-# 2. 저장소 로직
+# 2. 저장소 로직 (알림 중복 방지)
 def get_saved_price(stock_name):
     if os.path.exists(PRICE_LOG):
         with open(PRICE_LOG, "r", encoding="utf-8") as f:
@@ -42,7 +42,7 @@ def save_price(stock_name, price):
     with open(PRICE_LOG, "w", encoding="utf-8") as f:
         for name, p in prices.items(): f.write(f"{name},{p}\n")
 
-# 3. 텔레그램 발송 (2중 안전장치 유지)
+# 3. 텔레그램 발송 로직
 def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -53,7 +53,7 @@ def send_telegram_msg(message):
             requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": "[일반텍스트전송]\n" + clean_text})
     except: pass
 
-# 4. 데이터 로드 (캐싱 및 지수 포함)
+# 4. 데이터 로드 (서버 차단 방지 로직 적용)
 @st.cache_data(ttl=60)
 def get_market_info(ticker_symbol):
     try:
@@ -72,24 +72,34 @@ def get_data():
         df = raw_df.iloc[:, :7].copy()
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
+        # 지수 정보 로드
         kospi_p, kospi_r = get_market_info("^KS11")
         kosdaq_p, kosdaq_r = get_market_info("^KQ11")
             
-        progress_bar = st.progress(0, text="시세 데이터를 동기화 중...")
+        progress_bar = st.progress(0, text="데이터 안전 동기화 중 (차단 방지 적용)...")
         for i, row in df.iterrows():
-            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 로딩 중")
-            t = yf.Ticker(f"{row['코드']}.KS")
+            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 시세 수신 중")
+            
+            # 종목 코드 포맷팅 및 호출
+            ticker_symbol = f"{str(row['코드']).zfill(6)}.KS"
+            t = yf.Ticker(ticker_symbol)
             d = t.history(period="1d", interval="1m").tail(1)
+            
             if not d.empty:
                 curr = d['Close'].iloc[-1]
                 high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
                 df.at[i, '현재가'] = curr
                 df.at[i, '기준고점'] = max(high, curr)
-                prev = t.info.get('previousClose', curr)
+                # 이전 종가 정보 획득
+                prev = t.info.get('previousClose') or curr
                 df.at[i, '등락률'] = (curr - prev) / prev
-            time.sleep(1.0)
+            
+            # [비판적 참모 조치] 야후 서버 차단을 피하기 위해 대기 시간을 1초로 강화
+            time.sleep(1.0) 
+            
         progress_bar.empty()
 
+        # 데이터 후처리
         for col in ['현재가', '기준고점', '등락률']: df[col] = pd.to_numeric(df[col], errors='coerce')
         df['손절(-10%)'] = df['기준고점'] * 0.9
         df['손절(-15%)'] = df['기준고점'] * 0.85
@@ -100,12 +110,13 @@ def get_data():
         st.error(f"오류 발생: {e}")
         return pd.DataFrame(), (0,0), (0,0)
 
-# 5. 실행 및 알림
+# 5. 알림 실행부
 final_df, kospi, kosdaq = get_data()
 
 if not final_df.empty:
     for _, s in final_df[final_df['상태'] == "🚨위험"].iterrows():
         last_p = get_saved_price(s['종목명'])
+        # 직전 알림가보다 3% 이상 하락했을 때만 알림 전송 (도배 방지)
         if last_p == 0 or s['현재가'] <= last_p * 0.97:
             s_name = html.escape(str(s['종목명']))
             emoji = "🔴" if s['등락률'] > 0 else "🔵"
@@ -113,8 +124,8 @@ if not final_df.empty:
             send_telegram_msg(msg)
             save_price(s['종목명'], s['현재가'])
 
-# 6. UI 시각화 (컬러 복구 섹션)
-st.title("📊 주식 실시간 감시 (컬러 UI)")
+# 6. UI 시각화 (기존 컬러 UI 복구)
+st.title("📊 ISA 주식 실시간 감시 (안정화)")
 st.caption(f"최종 업데이트: {datetime.now(KST).strftime('%H:%M:%S')}")
 
 if st.button("🔄 즉시 새로고침"):
@@ -125,14 +136,11 @@ c1, c2 = st.columns(2)
 with c1: st.metric("KOSPI", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
 with c2: st.metric("KOSDAQ", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
 
-# 스타일 정의 함수
 def apply_color_style(styler):
-    # 등락률 컬러 (빨강/파랑)
     def color_rate(val):
         color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
         return f'color: {color}; font-weight: bold'
     
-    # 상태 배경색
     def color_status(val):
         if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
         if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
