@@ -45,7 +45,7 @@ def get_data():
         return pd.DataFrame()
 
 # 3. UI 및 시각화 (스타일링 유지)
-st.title("📊 ISA 주식 실시간 감시 (안정화 완료)")
+st.title("📊 주식 고점 대비 추적 손절매")
 st.caption(f"동기화 시간: {datetime.now(KST).strftime('%H:%M:%S')}")
 
 if st.button("🔄 시트 데이터 새로고침"):
