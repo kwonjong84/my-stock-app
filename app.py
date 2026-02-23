@@ -87,7 +87,7 @@ def get_data():
                 df.at[i, '기준고점'] = max(high, curr)
                 prev = t.info.get('previousClose', curr)
                 df.at[i, '등락률'] = (curr - prev) / prev
-            time.sleep(0.1)
+            time.sleep(1.0)
         progress_bar.empty()
 
         for col in ['현재가', '기준고점', '등락률']: df[col] = pd.to_numeric(df[col], errors='coerce')
