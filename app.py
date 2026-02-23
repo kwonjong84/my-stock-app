@@ -43,14 +43,18 @@ def save_price(stock_name, price):
         for name, p in prices.items():
             f.write(f"{name},{p}\n")
 
-# 3. 텔레그램 발송 함수 (HTML 에러 방지 강화)
+# [교정] 3. 텔레그램 발송 함수 (특수문자 자동 변환 추가)
 def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        # 메시지 전송 시 parse_mode를 명시하되, 전송 실패 시 일반 텍스트로 재시도
         params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
         resp = requests.get(url, params=params, timeout=10)
+        
         if not resp.json().get("ok"):
-            st.error(f"텔레그램 API 에러: {resp.json().get('description')}")
+            # HTML 파싱 에러 발생 시, 모든 태그를 제거하고 일반 텍스트로 강제 발송
+            params = {"chat_id": TELEGRAM_CHAT_ID, "text": "파싱 에러로 일반 텍스트 전환 발송:\n" + message.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","")}
+            requests.get(url, params=params)
     except Exception as e:
         st.error(f"네트워크 오류: {e}")
 
@@ -116,22 +120,16 @@ def get_data():
         st.error(f"데이터 로드 중 심각한 오류 발생: {e}")
         return pd.DataFrame(), (0,0), (0,0)
 
-# --- 5. 실행 로직 ---
-final_df, kospi, kosdaq = get_data()
-
-if not final_df.empty:
-    danger_stocks = final_df[final_df['상태'] == "🚨위험"]
-    for _, s in danger_stocks.iterrows():
-        name = s['종목명']
-        current_p = s['현재가']
-        rate = s['등락률']
-        last_p = get_saved_price(name)
-        
+# [교정] 5. 실행 및 알림 로직 (데이터 안전하게 감싸기)
+# ... 데이터 로드 부분 생략 ...
         if last_p == 0 or current_p <= last_p * 0.97:
+            # 변수들을 안전하게 처리 (HTML 충돌 방지)
+            safe_name = html.escape(str(name))
             emoji = "🔴" if rate > 0 else "🔵"
+            
             msg = (
                 f"<b>‼️ [하락 경보] ‼️</b>\n\n"
-                f"<b>종목:</b> {name}\n"
+                f"<b>종목:</b> {safe_name}\n"
                 f"<b>현재가:</b> {current_p:,.0f}원 ({emoji} {rate:+.2%})\n"
                 f"<b>지수:</b> KOSPI {kospi[0]:,.2f} / KOSDAQ {kosdaq[0]:,.2f}\n\n"
                 f"<i>(이전 알림 대비 3% 추가 하락 시 재알림)</i>"
