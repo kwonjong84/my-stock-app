@@ -1,32 +1,31 @@
 import streamlit as st
 import pandas as pd
 import pytz
+import time
+import yfinance as yf
 import requests
 import os
 import html
-import time
 from datetime import datetime
 
-# [핵심] 야후 파이낸스 라이브러리 완전 제거 (오류의 근원 차단)
-# 1. 환경 설정 (유지)
+# 1. 환경 설정
 TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
 TELEGRAM_CHAT_ID = "63395333"
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
-# 구글 시트의 시세를 실시간으로 반영하기 위해 t=시간 파라미터 유지
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0&t={int(time.time())}"
 KST = pytz.timezone('Asia/Seoul')
 PRICE_LOG = "last_price_log.txt"
 
-st.set_page_config(page_title="ISA 감시 시스템 (생존 모드)", layout="wide")
+st.set_page_config(page_title="주식 감시 시스템 Pro (컬러 복구)", layout="wide")
 
-# 2~3. 저장소 및 텔레그램 (기존 로직 유지)
+# 2. 저장소 로직
 def get_saved_price(stock_name):
     if os.path.exists(PRICE_LOG):
         with open(PRICE_LOG, "r", encoding="utf-8") as f:
             for line in f:
                 try:
-                    p = line.strip().split(",")
-                    if len(p) == 2 and p[0] == stock_name: return float(p[1])
+                    parts = line.strip().split(",")
+                    if len(parts) == 2 and parts[0] == stock_name: return float(parts[1])
                 except: continue
     return 0.0
 
@@ -36,66 +35,118 @@ def save_price(stock_name, price):
         with open(PRICE_LOG, "r", encoding="utf-8") as f:
             for line in f:
                 try:
-                    p = line.strip().split(",")
-                    if len(p) == 2: prices[p[0]] = p[1]
+                    parts = line.strip().split(",")
+                    if len(parts) == 2: prices[parts[0]] = parts[1]
                 except: continue
     prices[stock_name] = str(price)
     with open(PRICE_LOG, "w", encoding="utf-8") as f:
-        for n, p in prices.items(): f.write(f"{n},{p}\n")
+        for name, p in prices.items(): f.write(f"{name},{p}\n")
 
+# 3. 텔레그램 발송 (2중 안전장치 유지)
 def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=5)
+        params = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        resp = requests.get(url, params=params, timeout=10)
+        if not resp.json().get("ok"):
+            clean_text = message.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","")
+            requests.get(url, params={"chat_id": TELEGRAM_CHAT_ID, "text": "[일반텍스트전송]\n" + clean_text})
     except: pass
 
-# 4. 데이터 로드 (구글 시트가 계산한 시세를 그대로 사용)
+# 4. 데이터 로드 (캐싱 및 지수 포함)
+@st.cache_data(ttl=60)
+def get_market_info(ticker_symbol):
+    try:
+        t = yf.Ticker(ticker_symbol)
+        h = t.history(period="2d", interval="1m")
+        if not h.empty:
+            curr = h['Close'].iloc[-1]
+            prev = t.info.get('previousClose', curr)
+            return curr, (curr - prev) / prev
+    except: pass
+    return 0, 0
+
 def get_data():
     try:
-        # 구글 시트에 미리 =GOOGLEFINANCE(코드, "price")가 설정되어 있어야 합니다.
         raw_df = pd.read_csv(SHEET_URL)
-        df = raw_df.iloc[:, :8].copy() # 상태 컬럼까지 포함
-        df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률', '상태']
+        df = raw_df.iloc[:, :7].copy()
+        df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
-        # 숫자형 변환 및 전처리
-        for col in ['현재가', '기준고점', '등락률', '손절(-10%)', '손절(-15%)']:
-            df[col] = pd.to_numeric(df[col].replace('[^0-9.-]', '', regex=True), errors='coerce').fillna(0)
+        kospi_p, kospi_r = get_market_info("^KS11")
+        kosdaq_p, kosdaq_r = get_market_info("^KQ11")
+            
+        progress_bar = st.progress(0, text="시세 데이터를 동기화 중...")
+        for i, row in df.iterrows():
+            progress_bar.progress((i + 1) / len(df), text=f"[{row['종목명']}] 로딩 중")
+            t = yf.Ticker(f"{row['코드']}.KS")
+            d = t.history(period="1d", interval="1m").tail(1)
+            if not d.empty:
+                curr = d['Close'].iloc[-1]
+                high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+                df.at[i, '현재가'] = curr
+                df.at[i, '기준고점'] = max(high, curr)
+                prev = t.info.get('previousClose', curr)
+                df.at[i, '등락률'] = (curr - prev) / prev
+            time.sleep(0.1)
+        progress_bar.empty()
+
+        for col in ['현재가', '기준고점', '등락률']: df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['손절(-10%)'] = df['기준고점'] * 0.9
+        df['손절(-15%)'] = df['기준고점'] * 0.85
+        df['상태'] = df.apply(lambda r: "🚨위험" if r['현재가'] <= r['손절(-15%)'] else "⚠️주의" if r['현재가'] <= r['손절(-10%)'] else "✅안정", axis=1)
         
-        # 지수 정보 (야후 대신 시트의 특정 셀에서 가져오거나 임시 0 처리)
-        kospi = (0, 0) 
-        kosdaq = (0, 0)
-        
-        return df, kospi, kosdaq
+        return df, (kospi_p, kospi_r), (kosdaq_p, kosdaq_r)
     except Exception as e:
-        st.error(f"시트 로드 오류: {e}")
+        st.error(f"오류 발생: {e}")
         return pd.DataFrame(), (0,0), (0,0)
 
-# 5. 메인 로직
+# 5. 실행 및 알림
 final_df, kospi, kosdaq = get_data()
 
 if not final_df.empty:
-    # 텔레그램 알림 로직 (위험 종목 탐색)
-    for _, s in final_df[final_df['상태'].str.contains("위험", na=False)].iterrows():
+    for _, s in final_df[final_df['상태'] == "🚨위험"].iterrows():
         last_p = get_saved_price(s['종목명'])
         if last_p == 0 or s['현재가'] <= last_p * 0.97:
-            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s['종목명']}\n<b>현재가:</b> {s['현재가']:,.0f}원"
+            s_name = html.escape(str(s['종목명']))
+            emoji = "🔴" if s['등락률'] > 0 else "🔵"
+            msg = f"<b>‼️ [하락 경보] ‼️</b>\n\n<b>종목:</b> {s_name}\n<b>현재가:</b> {s['현재가']:,.0f}원 ({emoji} {s['등락률']:+.2%})\n<b>시장:</b> KOSPI {kospi[0]:,.2f} / KOSDAQ {kosdaq[0]:,.2f}"
             send_telegram_msg(msg)
             save_price(s['종목명'], s['현재가'])
 
-# 6. UI 시각화 (컬러 스타일 보존)
-st.title("📊 ISA 감시 시스템 (라이브러리 제거판)")
-st.info("💡 야후 파이낸스 오류로 인해 '구글 시트 시세 데이터'를 직접 사용 중입니다.")
+# 6. UI 시각화 (컬러 복구 섹션)
+st.title("📊 주식 실시간 감시 (컬러 UI)")
+st.caption(f"최종 업데이트: {datetime.now(KST).strftime('%H:%M:%S')}")
+
+if st.button("🔄 즉시 새로고침"):
+    st.cache_data.clear()
+    st.rerun()
+
+c1, c2 = st.columns(2)
+with c1: st.metric("KOSPI", f"{kospi[0]:,.2f}", f"{kospi[1]:+.2%}")
+with c2: st.metric("KOSDAQ", f"{kosdaq[0]:,.2f}", f"{kosdaq[1]:+.2%}")
+
+# 스타일 정의 함수
+def apply_color_style(styler):
+    # 등락률 컬러 (빨강/파랑)
+    def color_rate(val):
+        color = '#ff4b4b' if val > 0 else '#1c83e1' if val < 0 else '#ffffff'
+        return f'color: {color}; font-weight: bold'
+    
+    # 상태 배경색
+    def color_status(val):
+        if val == "🚨위험": return 'background-color: #ff4b4b; color: white; font-weight: bold'
+        if val == "⚠️주의": return 'background-color: #ffa421; color: black; font-weight: bold'
+        return 'background-color: #28a745; color: white; font-weight: bold'
+
+    styler.applymap(color_rate, subset=['등락률'])
+    styler.applymap(color_status, subset=['상태'])
+    styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
+    return styler
 
 if not final_df.empty:
     display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
-    
-    def apply_style(styler):
-        styler.applymap(lambda v: f'color: {"#ff4b4b" if v > 0 else "#1c83e1" if v < 0 else "white"}; font-weight: bold', subset=['등락률'])
-        styler.applymap(lambda v: f'background-color: {"#ff4b4b" if "🚨" in str(v) else "#ffa421" if "⚠️" in str(v) else "#28a745"}; color: white; font-weight: bold', subset=['상태'])
-        styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
-        return styler
-
-    st.dataframe(apply_style(display_df.style.format({
+    styled_df = apply_color_style(display_df.style.format({
         '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
         '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
-    })), use_container_width=True, height=600)
+    }))
+    st.dataframe(styled_df, use_container_width=True, height=600)
