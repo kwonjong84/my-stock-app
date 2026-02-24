@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import json
 import time
+import yfinance as yf # 3차 백업용 지수 라이브러리
 from datetime import datetime
 import pytz
 
@@ -15,7 +16,7 @@ SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 KST = pytz.timezone('Asia/Seoul')
 
-st.set_page_config(page_title="ISA 실시간 감시 Pro", layout="wide")
+st.set_page_config(page_title="ISA 실시간 감시 (지수 완결판)", layout="wide")
 
 # 2. 한투 Access Token 발급
 @st.cache_data(ttl=86400)
@@ -27,21 +28,18 @@ def get_access_token():
         return res.json().get('access_token')
     except: return None
 
-# 3. 네이버 금융 지수 조회 (가장 안전한 방식)
-def get_naver_index():
+# 3. [최종 병기] Yahoo Finance를 이용한 지수 조회
+def get_index_yf():
     try:
-        url = "https://polling.finance.naver.com/api/realtime/world/index/KOSPI,KOSDAQ"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5).json()
-        datas = res.get('datas', [])
+        # 코스피(^KS11), 코스닥(^KQ11)
+        tickers = yf.Tickers('^KS11 ^KQ11')
+        kp = tickers.tickers['^KS11'].fast_info
+        kd = tickers.tickers['^KQ11'].fast_info
         
-        # 데이터 정제 함수
-        def clean_val(item, key):
-            val = str(item.get(key, '0')).replace(',', '')
-            return float(val)
-
-        kp = (clean_val(datas[0], 'now'), clean_val(datas[0], 'rate'))
-        kd = (clean_val(datas[1], 'now'), clean_val(datas[1], 'rate'))
-        return kp, kd
+        # (현재가, 등락률)
+        kp_data = (kp.last_price, (kp.last_price / kp.previous_close - 1) * 100)
+        kd_data = (kd.last_price, (kd.last_price / kd.previous_close - 1) * 100)
+        return kp_data, kd_data
     except:
         return (0.0, 0.0), (0.0, 0.0)
 
@@ -56,61 +54,50 @@ def get_current_price(code, token):
         return float(out.get('stck_prpr', 0)), float(out.get('prdy_ctrt', 0))
     except: return 0.0, 0.0
 
-# 5. 메인 UI 구성
+# 5. UI 출력 로직
 token = get_access_token()
-
-if not token:
-    st.error("🔑 한투 API 연결 실패! Key와 Secret을 확인하세요.")
-else:
-    # 지수 섹션
-    kp, kd = get_naver_index()
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1: st.metric("KOSPI", f"{kp[0]:,.2f}", f"{kp[1]:+.2f}%")
-    with c2: st.metric("KOSDAQ", f"{kd[0]:,.2f}", f"{kd[1]:+.2f}%")
-    with c3:
+if token:
+    # 지수 로드 (YFinance)
+    kp, kd = get_index_yf()
+    
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        st.metric("KOSPI", f"{kp[0]:,.2f}", f"{kp[1]:+.2f}%")
+    with col2:
+        st.metric("KOSDAQ", f"{kd[0]:,.2f}", f"{kd[1]:+.2f}%")
+    with col3:
         st.write(f"⏱️ **업데이트:** {datetime.now(KST).strftime('%H:%M:%S')}")
         if st.button("🔄 시세 새로고침"): st.rerun()
 
-    # 6. 데이터 처리
+    # 6. 데이터 로드
     try:
-        df_raw = pd.read_csv(f"{SHEET_URL}&t={int(time.time())}").iloc[:, :7]
-        df_raw.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
+        df = pd.read_csv(f"{SHEET_URL}&t={int(time.time())}").iloc[:, :7]
+        df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
-        prog = st.progress(0, text="실시간 시세 동기화 중...")
-        for i, row in df_raw.iterrows():
+        prog = st.progress(0, text="한투 실시간 데이터 수신 중...")
+        for i, row in df.iterrows():
             code = str(row['코드']).zfill(6)
             curr, rate = get_current_price(code, token)
             high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
-            
-            df_raw.at[i, '현재가'] = curr
-            df_raw.at[i, '등락률'] = rate / 100
-            df_raw.at[i, '기준고점'] = max(high, curr)
-            
+            df.at[i, '현재가'], df.at[i, '등락률'], df.at[i, '기준고점'] = curr, rate/100, max(high, curr)
             time.sleep(0.05)
-            prog.progress((i+1)/len(df_raw))
+            prog.progress((i+1)/len(df))
         prog.empty()
 
-        # 손절 계산 및 상태
-        df_raw['손절(-10%)'] = df_raw['기준고점'] * 0.90
-        df_raw['손절(-15%)'] = df_raw['기준고점'] * 0.85
-        def get_status(r):
-            if r['현재가'] <= r['손절(-15%)']: return "🚨위험"
-            if r['현재가'] <= r['손절(-10%)']: return "⚠️주의"
-            return "✅안정"
-        df_raw['상태'] = df_raw.apply(get_status, axis=1)
+        # 계산 및 상태
+        df['손절(-10%)'], df['손절(-15%)'] = df['기준고점']*0.9, df['기준고점']*0.85
+        df['상태'] = df.apply(lambda r: "🚨위험" if r['현재가'] <= r['손절(-15%)'] else "⚠️주의" if r['현재가'] <= r['손절(-10%)'] else "✅안정", axis=1)
 
-        # 7. 스타일링 및 출력 (최신 Streamlit map 방식)
-        view = df_raw[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
+        # 7. 출력
+        view = df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
         
         def apply_style(styler):
-            # 등락률 색상
             styler.map(lambda v: f'color: {"#ff4b4b" if v > 0 else "#1c83e1" if v < 0 else "white"}; font-weight: bold', subset=['등락률'])
-            # 상태 배경색
-            def status_bg(v):
+            def s_bg(v):
                 if "🚨" in str(v): return 'background-color: #ff4b4b; color: white;'
                 if "⚠️" in str(v): return 'background-color: #ffa421; color: black;'
                 return 'background-color: #28a745; color: white;'
-            styler.map(status_bg, subset=['상태'])
+            styler.map(s_bg, subset=['상태'])
             styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
             return styler
 
@@ -118,6 +105,5 @@ else:
             '현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', 
             '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
         })), use_container_width=True, height=600)
-
     except Exception as e:
-        st.error(f"⚠️ 데이터 로드 중 오류 발생: {e}")
+        st.error(f"데이터 로드 실패: {e}")
