@@ -27,16 +27,10 @@ st.set_page_config(page_title="ISA 실시간 감시 (알람 완결판)", layout=
 # 2. 텔레그램 발송 함수 (정수형 ID 변환 및 에러 노출)
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": int(TG_ID),  # 문자열일 경우를 대비해 int 변환
-        "text": message
-    }
-    try:
-        res = requests.post(url, json=payload, timeout=5)
-        if not res.json().get("ok"):
-            st.error(f"텔레그램 응답 에러: {res.json().get('description')}")
-    except Exception as e:
-        st.error(f"텔레그램 통신 에러: {e}")
+    payload = {"chat_id": int(TG_ID), "text": message}
+    res = requests.post(url, json=payload)
+    # 아래 줄을 추가하여 화면에 텔레그램 서버의 진짜 답변을 출력하세요.
+    st.write(f"DEBUG: 텔레그램 응답 -> {res.json()}")
 
 # 3. 한투 Access Token 발급
 @st.cache_data(ttl=86400)
