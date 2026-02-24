@@ -1,72 +1,111 @@
 import streamlit as st
 import pandas as pd
 import requests
-import os
+import json
 import time
+import os
 from datetime import datetime
 import pytz
 
-# 1. 환경 설정 (유지)
+# 1. API 보안 정보 (복사해두신 값을 여기에 넣으세요)
+APP_KEY = "PSauHiM9UT2XGwV0tAIWA6c9a9znz5tDLLha"
+APP_SECRET = "qq0Kun7IXWgjgnn29cqieu+n6IhUFApMDYzgbaOsflLTPMZtz4l83vc+LywIyT7PZPJyboFSvwYiGuAcElLNvR4LXl+PTO91LdMXnsuwpGedz+Jqo7RoTP2+b27AK4HafMCt2Ru4lJfH4FcrAnGmNs2DkBzNOmBuRcIPodfxe7uLMjHqI7U="
+BASE_URL = "https://openapi.koreainvestment.com:9443" # 실전투자 서버
+
+# 기존 텔레그램 및 시트 정보 (사용자님 정보 유지)
 TELEGRAM_TOKEN = "7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"
 TELEGRAM_CHAT_ID = "63395333"
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0&t={int(time.time())}"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 KST = pytz.timezone('Asia/Seoul')
 
-st.set_page_config(page_title="ISA 감시 시스템 (로직 내장형)", layout="wide")
+st.set_page_config(page_title="ISA 실시간 감시 (한투 API Pro)", layout="wide")
 
-# 2. 데이터 로드 및 '상태' 계산 로직
-def get_data():
+# 2. 한투 Access Token 발급 (출입증 받기)
+@st.cache_data(ttl=86400)
+def get_access_token():
+    url = f"{BASE_URL}/oauth2/tokenP"
+    payload = {
+        "grant_type": "client_credentials",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET
+    }
+    res = requests.post(url, data=json.dumps(payload))
+    return res.json().get('access_token')
+
+# 3. 실시간 현재가 조회 함수
+def get_current_price(code, token):
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "Content-Type": "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010100"
+    }
+    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
+    res = requests.get(url, headers=headers, params=params)
+    data = res.json().get('output', {})
+    # 현재가와 등락률(전일대비율) 반환
+    return float(data.get('stck_prpr', 0)), float(data.get('prdy_ctrt', 0))
+
+# 4. 데이터 통합 로드
+def get_integrated_data():
+    token = get_access_token()
+    if not token:
+        st.error("❌ 한투 API 인증 실패! Key와 Secret을 다시 확인하세요.")
+        return pd.DataFrame()
+
     try:
-        df = pd.read_csv(SHEET_URL)
-        
-        # [비판적 수정] 시트의 컬럼명을 사용자님 시트에 맞게 슬라이싱
-        # A~G열까지만 있다고 가정하고 필요한 열만 추출합니다.
-        df = df.iloc[:, :7].copy()
+        # 구글 시트에서 종목 리스트 로드
+        raw_df = pd.read_csv(f"{SHEET_URL}&t={int(time.time())}")
+        df = raw_df.iloc[:, :7].copy()
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
-
-        # 숫자 데이터 정제 (수식 에러 #N/A 등을 0으로 처리)
-        for col in ['현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         
-        # [핵심] 파이썬이 스스로 상태를 판별하는 함수
-        def judge_status(row):
-            if row['현재가'] == 0: return "⏳ 대기"
-            if row['현재가'] <= row['손절(-15%)']: return "🚨위험"
-            if row['현재가'] <= row['손절(-10%)']: return "⚠️주의"
-            return "✅안정"
+        progress_bar = st.progress(0, text="한투 서버에서 실시간 시세 수신 중...")
         
-        # 시트에는 없지만, 앱 화면을 위해 '상태' 열을 즉석에서 만듭니다.
-        df['상태'] = df.apply(judge_status, axis=1)
+        for i, row in df.iterrows():
+            code = str(row['코드']).zfill(6) # 종목코드 6자리 유지
+            curr, rate = get_current_price(code, token)
+            
+            high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+            df.at[i, '현재가'] = curr
+            df.at[i, '등락률'] = rate / 100 # % 단위를 소수로 변환
+            df.at[i, '기준고점'] = max(high, curr)
+            
+            time.sleep(0.1) # 초당 10건 제한 준수
+            progress_bar.progress((i+1)/len(df))
+        
+        progress_bar.empty()
+        
+        # 상태 판별 및 손절선 계산
+        df['손절(-10%)'] = df['기준고점'] * 0.90
+        df['손절(-15%)'] = df['기준고점'] * 0.85
+        df['상태'] = df.apply(lambda r: "🚨위험" if r['현재가'] <= r['손절(-15%)'] else "⚠️주의" if r['현재가'] <= r['손절(-10%)'] else "✅안정", axis=1)
         
         return df
     except Exception as e:
-        st.error(f"데이터 판별 오류: {e}")
+        st.error(f"데이터 로드 중 오류 발생: {e}")
         return pd.DataFrame()
 
-# 3. UI 및 시각화 (스타일링 유지)
-st.title("📊 주식 고점 대비 추적 손절매")
-st.caption(f"동기화 시간: {datetime.now(KST).strftime('%H:%M:%S')}")
+# 5. 메인 UI (사용자님 스타일 유지)
+st.title("🚀 ISA 실시간 감시 (한국투자증권 연동)")
+st.caption(f"최종 동기화: {datetime.now(KST).strftime('%H:%M:%S')}")
 
-if st.button("🔄 시트 데이터 새로고침"):
+if st.button("🔄 시세 새로고침"):
     st.rerun()
 
-final_df = get_data()
+final_df = get_integrated_data()
 
 if not final_df.empty:
     display_df = final_df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
     
     def apply_style(styler):
-        # 등락률 컬러링
         styler.applymap(lambda v: f'color: {"#ff4b4b" if v > 0 else "#1c83e1" if v < 0 else "white"}; font-weight: bold', subset=['등락률'])
-        
-        # 상태 배경색 컬러링 (이모지 기반)
         def status_color(v):
-            if "🚨" in str(v): return 'background-color: #ff4b4b; color: white; font-weight: bold'
-            if "⚠️" in str(v): return 'background-color: #ffa421; color: black; font-weight: bold'
-            if "✅" in str(v): return 'background-color: #28a745; color: white; font-weight: bold'
-            return ''
-        
+            if "🚨" in str(v): return 'background-color: #ff4b4b; color: white;'
+            if "⚠️" in str(v): return 'background-color: #ffa421; color: black;'
+            return 'background-color: #28a745; color: white;'
         styler.applymap(status_color, subset=['상태'])
         styler.set_properties(subset=['현재가'], **{'color': '#00d1ff', 'font-weight': 'bold'})
         return styler
