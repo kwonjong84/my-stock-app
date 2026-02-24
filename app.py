@@ -8,8 +8,8 @@ from datetime import datetime
 import pytz
 
 # 1. API 보안 정보
-APP_KEY = "PSauHiM9UT2XGwV0tAIWA6c9a9znz5tDLLha"
-APP_SECRET = "qq0Kun7IXWgjgnn29cqieu+n6IhUFApMDYzgbaOsflLTPMZtz4l83vc+LywIyT7PZPJyboFSvwYiGuAcElLNvR4LXl+PTO91LdMXnsuwpGedz+Jqo7RoTP2+b27AK4HafMCt2Ru4lJfH4FcrAnGmNs2DkBzNOmBuRcIPodfxe7uLMjHqI7U="
+APP_KEY = st.secrets["APP_KEY"]
+APP_SECRET = st.secrets["APP_SECRET"]
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
