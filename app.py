@@ -10,8 +10,8 @@ import pytz
 # 1. API 및 텔레그램 보안 정보
 APP_KEY = st.secrets["APP_KEY"]
 APP_SECRET = st.secrets["APP_SECRET"]
-TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-TG_ID = st.secrets["CHAT_ID"]
+TG_TOKEN = st.secrets["7922092759:AAHG-8NYQSMu5b0tO4lzLWst3gFuC4zn0UM"]
+TG_ID = st.secrets["63395333"]
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
