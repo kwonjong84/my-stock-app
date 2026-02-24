@@ -7,11 +7,11 @@ import yfinance as yf
 from datetime import datetime
 import pytz
 
-# 1. API 및 텔레그램 보안 정보
+# 1. API 및 텔레그램 보안 정보 (이름으로 호출하도록 수정)
 APP_KEY = st.secrets["APP_KEY"]
 APP_SECRET = st.secrets["APP_SECRET"]
-TG_TOKEN = st.secrets["TG_TOKEN"]
-TG_ID = st.secrets["TG_ID"]
+TG_TOKEN = st.secrets["TG_TOKEN"]  # 수정됨
+TG_ID = st.secrets["TG_ID"]        # 수정됨
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
@@ -20,12 +20,15 @@ KST = pytz.timezone('Asia/Seoul')
 
 st.set_page_config(page_title="ISA 실시간 감시 (알람 완결판)", layout="wide")
 
-# 2. 텔레그램 발송 함수
+# 2. 텔레그램 발송 함수 (에러 로깅 추가)
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": TG_ID, "text": message}
-    try: requests.post(url, json=payload, timeout=5)
-    except: pass
+    try:
+        res = requests.post(url, json=payload, timeout=5)
+        res.raise_for_status() # 에러 발생 시 예외 발생
+    except Exception as e:
+        st.warning(f"텔레그램 발송 실패: {e}")
 
 # 3. 한투 Access Token 발급
 @st.cache_data(ttl=86400)
