@@ -28,7 +28,7 @@ def get_access_token():
     res = requests.post(url, data=json.dumps(payload))
     return res.json().get('access_token')
 
-# 3. 실시간 지수 조회 함수 (보정됨)
+# 3. 실시간 지수 조회 함수 (완전 보정본)
 def get_market_index(code, token):
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-index-price"
     headers = {
@@ -36,18 +36,26 @@ def get_market_index(code, token):
         "authorization": f"Bearer {token}",
         "appkey": APP_KEY,
         "appsecret": APP_SECRET,
-        "tr_id": "FHPST01010000",
-        "custtype": "P"  # 개인 고객 명시
+        "tr_id": "FHPST01010000", # 국내지수 현재가용 공식 TR
+        "custtype": "P"
     }
-    params = {"fid_cond_mrkt_div_code": "U", "fid_input_iscd": code}
+    params = {
+        "fid_cond_mrkt_div_code": "U",
+        "fid_input_iscd": code
+    }
     try:
         res = requests.get(url, headers=headers, params=params)
-        output = res.json().get('output', {})
-        # 지수 현재가(bstp_nmix_prpr), 전일대비율(bstp_nmix_prdy_ctrt)
-        val = float(output.get('bstp_nmix_prpr', 0))
-        rate = float(output.get('bstp_nmix_prdy_ctrt', 0))
+        data = res.json()
+        output = data.get('output', {})
+        
+        # [비판적 수정] 한투 API 응답 필드명이 계좌별로 다를 수 있어 이중 체크
+        val = float(output.get('bstp_nmix_prpr', 0) or output.get('stck_prpr', 0))
+        rate = float(output.get('bstp_nmix_prdy_ctrt', 0) or output.get('prdy_ctrt', 0))
+        
         return val, rate
-    except:
+    except Exception as e:
+        # 에러 발생 시 로그 확인용 (화면엔 0으로 표시)
+        print(f"Index Error ({code}): {e}")
         return 0.0, 0.0
 
 # 4. 종목 현재가 조회 함수
