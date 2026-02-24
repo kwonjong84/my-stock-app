@@ -29,33 +29,23 @@ def get_access_token():
     return res.json().get('access_token')
 
 # 3. 실시간 지수 조회 함수 (완전 보정본)
-def get_market_index(code, token):
-    url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+# 기존 get_market_index를 버리고, 이 방식으로 시도해보세요.
+def get_market_index_alt(code, token):
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = {
         "Content-Type": "application/json",
         "authorization": f"Bearer {token}",
         "appkey": APP_KEY,
         "appsecret": APP_SECRET,
-        "tr_id": "FHPST01010000", # 국내지수 현재가용 공식 TR
-        "custtype": "P"
+        "tr_id": "FHKST01010100" # 지수 전용이 아닌, 일반 주식 조회용 TR 사용
     }
-    params = {
-        "fid_cond_mrkt_div_code": "U",
-        "fid_input_iscd": code
-    }
+    # 코스피: '001', 코스닥: '101' 또는 '0001', '1001'
+    params = {"fid_cond_mrkt_div_code": "U", "fid_input_iscd": code} 
     try:
         res = requests.get(url, headers=headers, params=params)
-        data = res.json()
-        output = data.get('output', {})
-        
-        # [비판적 수정] 한투 API 응답 필드명이 계좌별로 다를 수 있어 이중 체크
-        val = float(output.get('bstp_nmix_prpr', 0) or output.get('stck_prpr', 0))
-        rate = float(output.get('bstp_nmix_prdy_ctrt', 0) or output.get('prdy_ctrt', 0))
-        
-        return val, rate
-    except Exception as e:
-        # 에러 발생 시 로그 확인용 (화면엔 0으로 표시)
-        print(f"Index Error ({code}): {e}")
+        data = res.json().get('output', {})
+        return float(data.get('stck_prpr', 0)), float(data.get('prdy_ctrt', 0))
+    except:
         return 0.0, 0.0
 
 # 4. 종목 현재가 조회 함수
