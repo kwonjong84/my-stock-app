@@ -75,7 +75,11 @@ if token:
         for i, row in df.iterrows():
             code = str(row['코드']).zfill(6)
             curr, rate = get_current_price(code, token)
-            high = max(pd.to_numeric(row['기준고점'], errors='coerce') or 0, curr)
+            
+            # [핵심 수정] 시트의 100일 고점과 현재 실시간 주가를 비교
+            past_high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
+            high = max(past_high, curr) 
+            
             stop_10, stop_15 = high * 0.9, high * 0.85
             
             if curr <= stop_15:
