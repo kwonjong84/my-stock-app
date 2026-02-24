@@ -17,7 +17,7 @@ SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 KST = pytz.timezone('Asia/Seoul')
 
-st.set_page_config(page_title="ISA 실시간 감시 (알람 완결판)", layout="wide")
+st.set_page_config(page_title="추적손절매를 지켜라", layout="wide")
 
 # 2. 알림 중복 방지를 위한 세션 상태 초기화
 if 'alert_history' not in st.session_state:
