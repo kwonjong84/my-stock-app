@@ -76,31 +76,35 @@ if token:
             code = str(row['코드']).zfill(6)
             curr, rate = get_current_price(code, token)
             
-            # [핵심 수정] 시트의 100일 고점과 현재 실시간 주가를 비교
+            # [수정] 가격이 0인 경우(API 오류 등) 판정 및 알람 전체 건너뛰기
+            if curr <= 0:
+                status = "⚠️데이터오류"
+                df.at[i, '현재가'], df.at[i, '상태'] = 0, status
+                continue # 다음 종목으로 바로 넘어감 (알람 로직 실행 안 함)
+
+            # 정상 가격일 때만 아래 로직 실행
             past_high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
             high = max(past_high, curr) 
-            
             stop_10, stop_15 = high * 0.9, high * 0.85
             
             if curr <= stop_15:
                 status = "🚨위험"
                 if code not in st.session_state.alert_history:
-                    send_telegram_msg(f"‼️ [급보] {row['종목명']} 손절가 이탈\n현재가: {curr:,.0f}\n손절기준(-15%): {stop_15:,.0f}")
+                    send_telegram_msg(f"‼️ [Mystockalert] {row['종목명']} 손절가 이탈\n현재가: {curr:,.0f}\n손절기준(-15%): {stop_15:,.0f}")
                     st.session_state.alert_history.add(code)
             elif curr <= stop_10:
                 status = "⚠️주의"
             else:
                 status = "✅안정"
-                if code in st.session_state.alert_history: st.session_state.alert_history.remove(code)
-                
+                if code in st.session_state.alert_history:
+                    st.session_state.alert_history.remove(code)
+            
+            # 데이터 업데이트
             df.at[i, '현재가'], df.at[i, '등락률'], df.at[i, '기준고점'] = curr, rate/100, high
             df.at[i, '손절(-10%)'], df.at[i, '손절(-15%)'] = stop_10, stop_15
             status_list.append(status)
+            
             time.sleep(0.2)
-            prog.progress((i+1)/len(df))
-        
-        df['상태'] = status_list
-        prog.empty()
 
         # 스타일링 함수 정의
         def style_df(df):
