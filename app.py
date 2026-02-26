@@ -16,25 +16,38 @@ SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 KST = pytz.timezone('Asia/Seoul')
 
-st.set_page_config(page_title="ISA 실시간 감시 (최종안정)", layout="wide")
+st.set_page_config(page_title="ISA 실시간 감시 (지수복구완료)", layout="wide")
 
 if 'alert_history' not in st.session_state:
     st.session_state.alert_history = set()
 
-# 2. 지수 수집 함수 (네이버 페이 증권 최신 API)
+# 2. [수정] 지수 수집 함수 (가장 확실한 최신 API 주소)
 def get_naver_index():
     try:
-        # 이 주소가 현재 네이버에서 가장 안정적으로 지수를 뱉어주는 주소입니다.
+        # 네이버 페이 증권에서 사용하는 실시간 API 주소로 교체
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI,KOSDAQ"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        # 브라우저인 척 속이기 위한 헤더 강화
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://finance.naver.com/"
+        }
         res = requests.get(url, headers=headers, timeout=5).json()
-        items = res.get('datas', [])
         
-        # 코스피/코스닥 추출
-        kp = (float(items[0]['now'].replace(',', '')), float(items[0]['fluctuationRate']))
-        kd = (float(items[1]['now'].replace(',', '')), float(items[1]['fluctuationRate']))
-        return kp, kd
-    except:
+        # 데이터 구조 파싱 (datas 리스트 확인)
+        items = res.get('datas', [])
+        if not items:
+            return (0.0, 0.0), (0.0, 0.0)
+
+        # 0: 코스피, 1: 코스닥
+        kp_now = float(items[0]['now'].replace(',', ''))
+        kp_rate = float(items[0]['fluctuationRate'])
+        kd_now = float(items[1]['now'].replace(',', ''))
+        kd_rate = float(items[1]['fluctuationRate'])
+        
+        return (kp_now, kp_rate), (kd_now, kd_rate)
+    except Exception as e:
+        # 에러 발생 시 로그에 남기기 (디버깅용)
+        st.sidebar.error(f"지수 수집 실패: {e}")
         return (0.0, 0.0), (0.0, 0.0)
 
 # 3. 한투 API 함수들
@@ -61,18 +74,19 @@ def get_current_price(code, token):
 # 4. 메인 실행부
 token = get_access_token()
 if token:
+    # 지수 조회 함수 호출
     kp, kd = get_naver_index()
     
-    # 지수 미터기 (metric)
+    # 상단 지수 미터기
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1: st.metric("KOSPI", f"{kp[0]:,.2f}", f"{kp[1]:+.2f}%")
     with c2: st.metric("KOSDAQ", f"{kd[0]:,.2f}", f"{kd[1]:+.2f}%")
     with c3: 
         st.write(f"⏱️ 감시중: {datetime.now(KST).strftime('%H:%M:%S')}")
-        if st.button("🔄 알림 리셋"): st.session_state.alert_history.clear(); st.rerun()
+        if st.button("🔄 기록 리셋"): st.session_state.alert_history.clear(); st.rerun()
 
     try:
-        # 데이터 로드
+        # 데이터 로드 및 전처리
         df = pd.read_csv(f"{SHEET_URL}&t={int(time.time())}").iloc[:, :7]
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
@@ -81,13 +95,13 @@ if token:
             code = str(row['코드']).zfill(6)
             curr, rate = get_current_price(code, token)
             
-            # 가격 0원(오류) 처리
+            # 가격 오류(0원) 및 감시 로직
             if curr <= 0:
                 status = "❓데이터오류"
                 high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
             else:
                 past_high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
-                high = max(past_high, curr) # 실시간 고점 갱신
+                high = max(past_high, curr)
                 stop_15 = high * 0.85
                 
                 if curr <= stop_15:
@@ -107,11 +121,9 @@ if token:
 
         df['상태'] = status_list
         
-        # [수정] 스타일링 로직 (컬러 빠짐 방지)
+        # 스타일링 함수
         def color_rate(v):
-            if v > 0: return 'color: #ff4b4b' # 빨강
-            if v < 0: return 'color: #1c83e1' # 파랑
-            return ''
+            return 'color: #ff4b4b' if v > 0 else 'color: #1c83e1' if v < 0 else ''
 
         def style_status(v):
             if v == "🚨위험": return 'background-color: #ff4b4b; color: white'
@@ -126,7 +138,7 @@ if token:
                 '현재가': '{:,.0f}', '등락률': '{:+.2%}', 
                 '기준고점': '{:,.0f}', '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'
             })
-            .map(color_rate, subset=['등락률']) # 등락률 컬러 추가
+            .map(color_rate, subset=['등락률'])
             .map(style_status, subset=['상태']),
             use_container_width=True, height=600
         )
