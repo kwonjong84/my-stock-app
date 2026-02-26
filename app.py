@@ -123,4 +123,18 @@ if token:
         styled_df = view_df.style.format({'현재가': '{:,.0f}', '등락률': '{:+.2%}', '기준고점': '{:,.0f}', '손절(-10%)': '{:,.0f}', '손절(-15%)': '{:,.0f}'})
         
         def style_status(val):
-            if val == "🚨위험
+            if val == "🚨위험": return 'background-color: #ff4b4b; color: white'
+            if val == "⚠️주의": return 'background-color: #ffa500; color: black'
+            if val == "✅안정": return 'background-color: #28a745; color: white'
+            return 'background-color: #808080; color: white'
+
+        def color_rate(val):
+            return 'color: #ff4b4b' if val > 0 else 'color: #1c83e1' if val < 0 else ''
+
+        if '상태' in view_df.columns: styled_df = styled_df.map(style_status, subset=['상태'])
+        if '등락률' in view_df.columns: styled_df = styled_df.map(color_rate, subset=['등락률'])
+
+        st.dataframe(styled_df, use_container_width=True, height=600)
+
+    except Exception as e:
+        st.error(f"⚠️ 시스템 오류: {e}")
