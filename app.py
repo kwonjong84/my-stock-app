@@ -49,14 +49,23 @@ def get_current_price(code, token):
         return float(out.get('stck_prpr', 0)), float(out.get('prdy_ctrt', 0))
     except: return 0.0, 0.0
 
-# 3. 메인 로직
+# 3. 메인 로직 시작
 token = get_access_token()
 if token:
-    st.write(f"⏱️ **마지막 감시 시간:** {datetime.now(KST).strftime('%H:%M:%S')}")
+    # 지수 데이터 가져오기 (yfinance)
+    kp, kd = get_index_yf()
     
-    if st.button("🔄 알림 기록 리셋 및 새로고침"):
-        st.session_state.alert_history.clear()
-        st.rerun()
+    # 상단 지수 미터기 배치
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1: 
+        st.metric("KOSPI", f"{kp[0]:,.2f}", f"{kp[1]:+.2f}%")
+    with col2: 
+        st.metric("KOSDAQ", f"{kd[0]:,.2f}", f"{kd[1]:+.2f}%")
+    with col3: 
+        st.write(f"⏱️ **감시 중:** {datetime.now(KST).strftime('%H:%M:%S')}")
+        if st.button("🔄 알림 리셋 & 새로고침"):
+            st.session_state.alert_history.clear()
+            st.rerun()
 
     try:
         # 시트 데이터 로드 및 컬럼명 강제 지정 (not in index 에러 방지)
