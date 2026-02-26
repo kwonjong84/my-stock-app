@@ -23,31 +23,33 @@ if 'alert_history' not in st.session_state:
 
 # 2. [수정] 지수 수집 함수 (가장 확실한 최신 API 주소)
 def get_naver_index():
+    """네이버 지수 API - 안정성 최우선 버전"""
     try:
-        # 네이버 페이 증권에서 사용하는 실시간 API 주소로 교체
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI,KOSDAQ"
-        # 브라우저인 척 속이기 위한 헤더 강화
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://finance.naver.com/"
         }
         res = requests.get(url, headers=headers, timeout=5).json()
-        
-        # 데이터 구조 파싱 (datas 리스트 확인)
         items = res.get('datas', [])
-        if not items:
+        
+        if not items or len(items) < 2:
             return (0.0, 0.0), (0.0, 0.0)
 
-        # 0: 코스피, 1: 코스닥
-        kp_now = float(items[0]['now'].replace(',', ''))
-        kp_rate = float(items[0]['fluctuationRate'])
-        kd_now = float(items[1]['now'].replace(',', ''))
-        kd_rate = float(items[1]['fluctuationRate'])
-        
-        return (kp_now, kp_rate), (kd_now, kd_rate)
+        results = []
+        for item in items:
+            # 'now'가 없으면 'close'나 'p' 등 다른 키를 찾거나 0을 반환하도록 방어적 설계
+            now_val = item.get('now') or item.get('close') or "0"
+            rate_val = item.get('fluctuationRate') or item.get('cr') or "0"
+            
+            price = float(str(now_val).replace(',', ''))
+            rate = float(str(rate_val).replace(',', ''))
+            results.append((price, rate))
+            
+        return results[0], results[1]
     except Exception as e:
-        # 에러 발생 시 로그에 남기기 (디버깅용)
-        st.sidebar.error(f"지수 수집 실패: {e}")
+        # 에러 발생 시 구체적인 원인 출력
+        st.sidebar.warning(f"지수 수집 실패 상세: {e}")
         return (0.0, 0.0), (0.0, 0.0)
 
 # 3. 한투 API 함수들
