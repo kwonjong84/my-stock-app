@@ -21,9 +21,8 @@ st.set_page_config(page_title="ISA 실시간 감시 (지수복구완료)", layou
 if 'alert_history' not in st.session_state:
     st.session_state.alert_history = set()
 
-# 2. [수정] 지수 수집 함수 (가장 확실한 최신 API 주소)
 def get_naver_index():
-    """네이버 지수 API - 안정성 최우선 버전"""
+    """네이버 지수 API - 모든 키 값을 뒤져서라도 찾아내는 버전"""
     try:
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI,KOSDAQ"
         headers = {
@@ -33,23 +32,23 @@ def get_naver_index():
         res = requests.get(url, headers=headers, timeout=5).json()
         items = res.get('datas', [])
         
-        if not items or len(items) < 2:
+        if not items:
             return (0.0, 0.0), (0.0, 0.0)
 
         results = []
         for item in items:
-            # 'now'가 없으면 'close'나 'p' 등 다른 키를 찾거나 0을 반환하도록 방어적 설계
-            now_val = item.get('now') or item.get('close') or "0"
-            rate_val = item.get('fluctuationRate') or item.get('cr') or "0"
+            # 1. 가격 찾기 (now, nv, close, last 중 있는 것 선택)
+            p = item.get('now') or item.get('nv') or item.get('close') or item.get('last') or "0"
+            # 2. 등락률 찾기 (fluctuationRate, cr, rate 중 있는 것 선택)
+            r = item.get('fluctuationRate') or item.get('cr') or item.get('rate') or "0"
             
-            price = float(str(now_val).replace(',', ''))
-            rate = float(str(rate_val).replace(',', ''))
+            # 숫자 외 문자 제거 및 변환
+            price = float(str(p).replace(',', ''))
+            rate = float(str(r).replace(',', ''))
             results.append((price, rate))
             
         return results[0], results[1]
     except Exception as e:
-        # 에러 발생 시 구체적인 원인 출력
-        st.sidebar.warning(f"지수 수집 실패 상세: {e}")
         return (0.0, 0.0), (0.0, 0.0)
 
 # 3. 한투 API 함수들
