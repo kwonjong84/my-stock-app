@@ -70,10 +70,19 @@ def get_current_price(code, token):
         return float(out.get('stck_prpr', 0)), float(out.get('prdy_ctrt', 0))
     except: return 0.0, 0.0
 
-# 3. 메인 실행부
+# [수정된 출력부]
 token = get_access_token()
-market_active = is_market_open() # [추가] 장 운영 여부 확인
+market_active = is_market_open()
 
+if token:
+    kp, kd = get_naver_index()
+    
+    # 지수 미터기 아래에 상태창 명시적 배치
+    st.divider() # 구분선 추가
+    if not market_active:
+        st.warning(f"⚠️ 현재 시각 {datetime.now(KST).strftime('%H:%M:%S')} - 장 마감 상태입니다. (알림 중단)")
+    else:
+        st.success(f"✅ 실시간 감시 가동 중 ({datetime.now(KST).strftime('%H:%M:%S')})")
 if token:
     kp, kd = get_naver_index()
     col1, col2, col3 = st.columns([1, 1, 2])
