@@ -16,24 +16,21 @@ SHEET_ID = "1_W1Vdhc3V5xbTLlCO6A7UfmGY8JAAiFZ-XVhaQWjGYI"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 KST = pytz.timezone('Asia/Seoul')
 
-st.set_page_config(page_title="ISA 실시간 감시 시스템", layout="wide")
+st.set_page_config(page_title="ISA 실시간 감시 (단계별 알림)", layout="wide")
 
-if 'alert_history' not in st.session_state:
-    st.session_state.alert_history = set()
+# [수정] 단계별 알림 기록을 위한 딕셔너리 세션
+if 'alert_levels' not in st.session_state:
+    st.session_state.alert_levels = {} # { '종목코드': 마지막보낸레벨(int) }
 
 # 2. 유틸리티 함수
 def is_market_open():
-    """평일 09:00 ~ 18:00 사이만 True 반환 (알림 발송 기준)"""
     now = datetime.now(KST)
     if now.weekday() >= 5: return False
-    # 시간 비교를 위해 정수형 분으로 변환 (900 ~ 1800)
     current_time_int = now.hour * 100 + now.minute
     return 900 <= current_time_int < 1800
 
 def send_telegram_msg(message):
-    # [이중 잠금] 함수 실행 시점에 시간이 지났으면 절대 발송하지 않음
-    if not is_market_open():
-        return
+    if not is_market_open(): return
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": int(TG_ID), "text": message}
     try: requests.post(url, json=payload, timeout=5)
@@ -82,14 +79,10 @@ if token:
     with col1: st.metric("KOSPI", f"{kp[0]:,.2f}", f"{kp[1]:+.2f}%")
     with col2: st.metric("KOSDAQ", f"{kd[0]:,.2f}", f"{kd[1]:+.2f}%")
     with col3:
-        # [상태창 유지] 장 마감 여부와 관계없이 현재 시각과 상태를 명확히 표시
-        if market_active:
-            st.success(f"🟢 실시간 감시 가동 중 ({datetime.now(KST).strftime('%H:%M:%S')})")
-        else:
-            st.warning(f"⚪ 장 마감 상태 ({datetime.now(KST).strftime('%H:%M:%S')}) - 알림이 차단되었습니다.")
-        
-        if st.button("🔄 리셋 & 새로고침"):
-            st.session_state.alert_history.clear()
+        if market_active: st.success(f"🟢 실시간 감시 가동 중 ({datetime.now(KST).strftime('%H:%M:%S')})")
+        else: st.warning(f"⚪ 장 마감 상태 ({datetime.now(KST).strftime('%H:%M:%S')}) - 알림 차단됨")
+        if st.button("🔄 알림 기록 리셋 & 새로고침"):
+            st.session_state.alert_levels.clear()
             st.rerun()
 
     try:
@@ -97,25 +90,37 @@ if token:
         df.columns = ['코드', '종목명', '현재가', '기준고점', '손절(-10%)', '손절(-15%)', '등락률']
         
         status_list = []
-        # 장이 마감되어도 표는 보여주되, 알림만 안 가게 설정
         prog_bar = st.progress(0, text="📊 데이터 분석 중...")
+        
         for i, row in df.iterrows():
             code = str(row['코드']).zfill(6)
             curr, rate = get_current_price(code, token)
             past_high = pd.to_numeric(row['기준고점'], errors='coerce') or 0
             high = max(past_high, curr) if curr > 0 else past_high
             
+            # 하락률 계산 및 알림 단계 판정 (0.85 이하 = 15%, 0.80 이하 = 20% ...)
+            drop_ratio = (curr / high) if high > 0 else 1.0
+            current_lv = 0
+            if drop_ratio <= 0.70: current_lv = 30
+            elif drop_ratio <= 0.75: current_lv = 25
+            elif drop_ratio <= 0.80: current_lv = 20
+            elif drop_ratio <= 0.85: current_lv = 15
+            
+            # 알림 로직 (이전에 보낸 단계보다 더 낮아졌을 때만 발송)
+            last_sent_lv = st.session_state.alert_levels.get(code, 0)
+            if current_lv > last_sent_lv:
+                send_telegram_msg(f"🚨 [ISA 단계경보] {row['종목명']}\n현재가: {curr:,.0f} (-{current_lv}% 돌파)\n기준고점: {high:,.0f}")
+                st.session_state.alert_levels[code] = current_lv
+            
+            # [참모 제언] 반등 시 리셋 로직: 하락률이 -10% 위로 회복되면 알림 단계 초기화
+            if drop_ratio > 0.90 and last_sent_lv > 0:
+                st.session_state.alert_levels[code] = 0
+
+            # 상태 표시 문자열 구성
             if curr <= 0: status = "❓데이터오류"
-            elif curr <= high * 0.85:
-                status = "🚨위험"
-                # [핵심] 여기서 send_telegram_msg가 시간을 한 번 더 체크함
-                if code not in st.session_state.alert_history:
-                    send_telegram_msg(f"‼️ [ISA] {row['종목명']} 이탈\n현재가: {curr:,.0f}")
-                    st.session_state.alert_history.add(code)
-            elif curr <= high * 0.9: status = "⚠️주의"
-            else:
-                status = "✅안정"
-                if code in st.session_state.alert_history: st.session_state.alert_history.remove(code)
+            elif drop_ratio <= 0.85: status = f"🚨위험(-{current_lv}%)"
+            elif drop_ratio <= 0.90: status = "⚠️주의(-10%)"
+            else: status = "✅안정"
             
             df.at[i, '현재가'], df.at[i, '등락률'], df.at[i, '기준고점'] = curr, rate/100, high
             df.at[i, '손절(-10%)'], df.at[i, '손절(-15%)'] = high*0.9, high*0.85
@@ -129,10 +134,10 @@ if token:
         # 4. 스타일링 및 출력
         def color_rate(v): return 'color: #ff4b4b' if v > 0 else 'color: #1c83e1' if v < 0 else ''
         def style_status(v):
-            colors = {"🚨위험": "background-color: #ff4b4b; color: white", 
-                      "⚠️주의": "background-color: #ffa500; color: black", 
-                      "✅안정": "background-color: #28a745; color: white"}
-            return colors.get(v, "background-color: #808080; color: white")
+            if "🚨위험" in v: return "background-color: #ff4b4b; color: white"
+            if "⚠️주의" in v: return "background-color: #ffa500; color: black"
+            if "✅안정" in v: return "background-color: #28a745; color: white"
+            return "background-color: #808080; color: white"
 
         st.dataframe(
             df[['종목명', '현재가', '등락률', '기준고점', '손절(-10%)', '손절(-15%)', '상태']]
